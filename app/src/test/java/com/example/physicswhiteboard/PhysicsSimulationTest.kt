@@ -243,6 +243,235 @@ class PhysicsSimulationTest {
     }
 
     @Test
+    fun normalModeConcatenatesInsteadOfFusing() {
+        val engine = PhysicsSimulationEngine()
+        engine.fusionMode = FusionMode.NORMAL
+        engine.bodies.clear()
+        val m = engine.createLetterBody("m", 100f, 100f)
+        val v = engine.createLetterBody("v", 120f, 100f)
+        engine.bodies.add(m)
+        engine.bodies.add(v)
+
+        // Drag v onto m: existing symbols first, dropped symbols appended.
+        assertTrue(engine.tryFuseSymbols(v, m))
+        assertEquals("mv", v.char)
+        assertEquals(listOf("m", "v"), v.componentChars)
+        assertEquals(1, engine.bodies.size)
+
+        val split = engine.splitFormula(v)
+        assertEquals(2, split.size)
+        assertTrue(split.any { it.char == "m" })
+        assertTrue(split.any { it.char == "v" })
+    }
+
+    @Test
+    fun normalModeKeepsDuplicateSymbols() {
+        val engine = PhysicsSimulationEngine()
+        engine.fusionMode = FusionMode.NORMAL
+        val first = engine.createLetterBody("m", 100f, 100f)
+        val second = engine.createLetterBody("m", 120f, 100f)
+        assertTrue(engine.tryFuseSymbols(second, first))
+        assertEquals("mm", second.char)
+    }
+
+    @Test
+    fun normalModeIgnoresFieldsAndRods() {
+        val engine = PhysicsSimulationEngine()
+        engine.fusionMode = FusionMode.NORMAL
+        engine.bodies.clear()
+        val e = engine.createLetterBody("E", 100f, 100f)
+        val b = engine.createLetterBody("B", 120f, 100f)
+        engine.bodies.add(e)
+        engine.bodies.add(b)
+        assertFalse(engine.canFuseSymbols(e, b))
+        assertFalse(engine.tryFuseSymbols(e, b))
+
+        val v = engine.createLetterBody("v", 200f, 200f)
+        val t = engine.createLetterBody("t", 220f, 200f)
+        engine.bodies.add(v)
+        engine.bodies.add(t)
+        assertFalse(engine.tryFuseSymbols(v, t))
+        assertEquals(4, engine.bodies.size)
+    }
+
+    @Test
+    fun physikIntermediatesCompleteLorentzForce() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        val q = engine.createLetterBody("q", 100f, 100f)
+        val v = engine.createLetterBody("v", 120f, 100f)
+        engine.bodies.add(q)
+        engine.bodies.add(v)
+        assertTrue(engine.tryFuseSymbols(q, v))
+        assertEquals("q·v", q.char)
+
+        val b = engine.createLetterBody("B", 140f, 100f)
+        engine.bodies.add(b)
+        assertTrue(engine.tryFuseSymbols(q, b))
+        assertEquals("FL = q·v·B", q.char)
+        assertTrue(q.renderedExpr!!.glyphs.any { it.text == "F" })
+        assertTrue(q.renderedExpr!!.glyphs.any { it.text == "B" })
+    }
+
+    @Test
+    fun physikIntermediatesNeverAbsorbFieldRegions() {
+        val engine = PhysicsSimulationEngine()
+        val v = engine.createLetterBody("v", 100f, 100f)
+        val b = engine.createLetterBody("B", 120f, 100f)
+        assertTrue(b.isFieldSource)
+        assertFalse(engine.canFuseSymbols(v, b))
+        assertFalse(engine.tryFuseSymbols(v, b))
+        assertTrue(b.isFieldSource)
+    }
+
+    @Test
+    fun orbitRadiusChainBuildsPairwise() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        val m = engine.createLetterBody("m", 100f, 100f)
+        val v = engine.createLetterBody("v", 110f, 100f)
+        engine.bodies.add(m)
+        engine.bodies.add(v)
+        assertTrue(engine.tryFuseSymbols(m, v))
+        assertEquals("p = m·v", m.char)
+
+        val q = engine.createLetterBody("q", 120f, 100f)
+        engine.bodies.add(q)
+        assertTrue(engine.tryFuseSymbols(m, q))
+        assertEquals("m·q·v", m.char)
+
+        val b = engine.createLetterBody("B", 130f, 100f)
+        engine.bodies.add(b)
+        assertTrue(engine.tryFuseSymbols(m, b))
+        assertEquals("r = m·v / (q·B)", m.char)
+        assertEquals(1, engine.bodies.size)
+    }
+
+    @Test
+    fun gravitationAndSchwarzschildChainsBuildPairwise() {
+        val engine = PhysicsSimulationEngine()
+        val g = engine.createLetterBody("G", 100f, 100f)
+        val bigM = engine.createLetterBody("M", 110f, 100f)
+        assertTrue(engine.tryFuseSymbols(g, bigM))
+        assertEquals("G·M", g.char)
+
+        val m = engine.createLetterBody("m", 120f, 100f)
+        assertTrue(engine.tryFuseSymbols(g, m))
+        assertEquals("F = G·M·m / r²", g.char)
+
+        val engine2 = PhysicsSimulationEngine()
+        val g2 = engine2.createLetterBody("G", 100f, 100f)
+        val bigM2 = engine2.createLetterBody("M", 110f, 100f)
+        assertTrue(engine2.tryFuseSymbols(g2, bigM2))
+        val c = engine2.createLetterBody("c", 120f, 100f)
+        assertTrue(engine2.tryFuseSymbols(g2, c))
+        assertEquals("rs = 2GM/c²", g2.char)
+        assertTrue(g2.isBlackHole)
+    }
+
+    @Test
+    fun einsteinFusionRendersCompleteEquation() {
+        val engine = PhysicsSimulationEngine()
+        val m = engine.createLetterBody("m", 100f, 100f)
+        val c = engine.createLetterBody("c", 110f, 100f)
+        assertTrue(engine.tryFuseSymbols(m, c))
+        assertEquals("E = m·c²", m.char)
+        val glyphs = m.renderedExpr!!.glyphs.map { it.text }
+        assertTrue(glyphs.contains("E"))
+        assertTrue(glyphs.contains("="))
+        assertTrue(glyphs.contains("m"))
+        assertTrue(glyphs.contains("c"))
+    }
+
+    @Test
+    fun magneticPeriodFromMassAndField() {
+        val engine = PhysicsSimulationEngine()
+        val m = engine.createLetterBody("m", 100f, 100f)
+        val b = engine.createLetterBody("B", 110f, 100f)
+        assertTrue(engine.tryFuseSymbols(m, b))
+        assertEquals("T = 2π·m / (q·B)", m.char)
+        assertTrue(m.renderedExpr!!.glyphs.any { it.text == "T" })
+    }
+
+    @Test
+    fun magneticPeriodAcceptsExplicitCharge() {
+        val engine = PhysicsSimulationEngine()
+        val m = engine.createLetterBody("m", 100f, 100f)
+        val q = engine.createLetterBody("q", 110f, 100f)
+        assertTrue(engine.tryFuseSymbols(m, q))
+        val b = engine.createLetterBody("B", 120f, 100f)
+        assertTrue(engine.tryFuseSymbols(m, b))
+        assertEquals("T = 2π·m / (q·B)", m.char)
+    }
+
+    @Test
+    fun hallVoltageChainRendersCompleteEquation() {
+        val engine = PhysicsSimulationEngine()
+        val q = engine.createLetterBody("q", 100f, 100f)
+        val t = engine.createLetterBody("t", 110f, 100f)
+        assertTrue(engine.tryFuseSymbols(q, t))
+        assertEquals("I", q.char)
+        val b = engine.createLetterBody("B", 120f, 100f)
+        assertTrue(engine.tryFuseSymbols(q, b))
+        assertEquals("UH = RH·I·B/d", q.char)
+        assertTrue(q.renderedExpr!!.glyphs.any { it.text == "U" })
+    }
+
+    @Test
+    fun fusedCurrentSplitsBackIntoChargeAndTime() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        val q = engine.createLetterBody("q", 100f, 100f)
+        val t = engine.createLetterBody("t", 110f, 100f)
+        engine.bodies.add(q)
+        engine.bodies.add(t)
+        assertTrue(engine.tryFuseSymbols(q, t))
+        assertEquals("I", q.char)
+        val split = engine.splitFormula(q)
+        assertEquals(2, split.size)
+        assertTrue(split.any { it.char == "q" })
+        assertTrue(split.any { it.char == "t" })
+    }
+
+    @Test
+    fun paletteCurrentStaysASingleSymbol() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        val i = engine.createLetterBody("I", 100f, 100f)
+        engine.bodies.add(i)
+        assertTrue(engine.splitFormula(i).isEmpty())
+        assertEquals(1, engine.bodies.size)
+    }
+
+    @Test
+    fun frictionTokenFallsAndDampsWhileVelocityTokenRests() {
+        val engine = PhysicsSimulationEngine()
+        val v = engine.createLetterBody("v", 100f, 100f)
+        assertTrue(v.hasVelocity)
+        assertEquals(0f, v.vx, 0.001f)
+        val mu = engine.createLetterBody("μ", 100f, 100f)
+        assertTrue(mu.hasFriction)
+        assertTrue(mu.hasGravity)
+    }
+
+    @Test
+    fun releasedBodyKeepsThrowVelocity() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        engine.canvasWidth = 2000f
+        engine.groundY = 1500f
+        val q = engine.createLetterBody("q", 300f, 300f)
+        engine.bodies.add(q)
+        engine.beginDrag(q)
+        engine.moveDraggedBody(q, 400f, 300f)
+        engine.endDrag(q, 500f, -200f)
+        assertEquals(500f, q.vx, 0.001f)
+        assertEquals(-200f, q.vy, 0.001f)
+        engine.step(0.016f)
+        assertTrue("a thrown body keeps moving after release", q.x > 400f && q.y < 300f)
+    }
+
+    @Test
     fun testCurriculumContentCompleteness() {
         assertEquals("Curriculum must have exactly 10 chapters", 10, KlausurCurriculum.CHAPTERS.size)
         assertEquals("Self-test must have 14 exam questions", 14, KlausurCurriculum.SELF_TEST.size)

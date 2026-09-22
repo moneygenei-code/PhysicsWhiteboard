@@ -25,6 +25,7 @@ object SharedFormulaCatalog {
         SharedFormulaRule("electric_force", "F = q·E", "Elektrische Kraft", setOf("q", "E"), listOf("q", "E")),
         SharedFormulaRule("electron_gun", "v = √(2qU/m)", "Elektronenkanone: v aus UB", setOf("q", "m"), listOf("q", "m")),
         SharedFormulaRule("period_magnetic", "T = 2π·m / (q·B)", "Umlaufdauer (v-unabhängig!)", setOf("m", "B"), listOf("m", "B")),
+        SharedFormulaRule("period_magnetic_q", "T = 2π·m / (q·B)", "Umlaufdauer (v-unabhängig!)", setOf("m", "q", "B"), listOf("m", "q", "B")),
         SharedFormulaRule("hall_voltage", "UH = RH·I·B/d", "Hall-Spannung", setOf("I", "B"), listOf("I", "B")),
         SharedFormulaRule("gravity_simplified", "F = G·M / r²", "Schwerkraft (vereinfacht)", setOf("M", "r"), listOf("M", "r"))
     )
