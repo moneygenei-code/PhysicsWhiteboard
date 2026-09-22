@@ -1,7 +1,5 @@
 package com.example.physicswhiteboard
 
-import kotlin.math.PI
-
 enum class MathTokenType {
     CHAR,
     EXPONENT,
@@ -47,6 +45,25 @@ object FormulaTypesetter {
         val fb = mutableListOf<RenderedFractionBar>()
 
         when {
+            // ── Compact Newton / momentum products ────────────────────────
+            // These are kept as complete equations. Previously the fallback
+            // renderer stripped the left-hand side and placed the two glyphs
+            // so close together that m + a / m + v looked like overlap.
+            formula == "F = m·a" || formula == "p = m·v" -> {
+                return linearFormula(formula, title, fontSize = 30f, spacing = 27f)
+            }
+
+            // ── Centripetal acceleration (must precede the generic fraction) ─
+            formula == "a = v² / r" -> {
+                val bs = 34f; val ss = 20f; val ny = -16f; val dy = 20f
+                gl += g("a", -34f, 0f, bs)
+                gl += g("=", -12f, 0f, 25f)
+                gl += g("v", 12f, ny, bs); gl += g("2", 30f, ny - 8f, ss, MathTokenType.EXPONENT)
+                fb += bar(2f, 46f, 0f, 2f)
+                gl += g("r", 20f, dy, bs)
+                return expr(formula, title, gl, fb, 92f, 70f)
+            }
+
             // ── Fractions with v² / r ──────────────────────────────────────
             formula.contains("v² / r") || formula.contains("v²/r") -> {
                 val bs = 36f; val ss = 22f; val ny = -18f; val dy = 22f
@@ -55,15 +72,6 @@ object FormulaTypesetter {
                 fb += bar(-38f, 32f, 0f, 2.2f)
                 gl += g("r", -4f, dy, bs)
                 return expr(formula, title, gl, fb, 84f, 74f)
-            }
-
-            // ── a = v² / r (centripetal acceleration) ────────────────────
-            formula == "a = v² / r" -> {
-                val bs = 34f; val ss = 20f; val ny = -16f; val dy = 20f
-                gl += g("v", -10f, ny, bs); gl += g("2", 8f, ny - 8f, ss, MathTokenType.EXPONENT)
-                fb += bar(-24f, 24f, 0f, 2f)
-                gl += g("r", -2f, dy, bs)
-                return expr(formula, title, gl, fb, 64f, 70f)
             }
 
             // ── Kinetic energy ½mv² ───────────────────────────────────────
@@ -174,20 +182,37 @@ object FormulaTypesetter {
             }
 
             // ── Linear fallback for simple products / single chars ────────
-            else -> {
-                val bs = 36f
-                val cleaned = formula
-                    .replace("F = ", "").replace("p = ", "").replace("P = ", "")
-                    .replace("·", "").replace(" ", "")
-                val count = cleaned.length
-                val startX = -((count - 1) * 22f) / 2f
-                for (i in cleaned.indices) {
-                    gl += g(cleaned[i].toString(), startX + i * 24f, 0f, bs)
-                }
-                val w = maxOf(50f, count * 26f + 16f)
-                return expr(formula, title, gl, fb, w, 48f)
-            }
+            else -> return linearFormula(formula, title)
         }
+    }
+
+    /**
+     * Render every non-space character, including the left-hand side and
+     * operators. This is intentionally conservative: it gives each glyph a
+     * stable slot so the hit/collision bounds can match the visible result.
+     */
+    private fun linearFormula(
+        formula: String,
+        title: String,
+        fontSize: Float = 30f,
+        spacing: Float = 24f
+    ): RenderedExpression {
+        val tokens = formula.filterNot { it.isWhitespace() }.map { it.toString() }
+        if (tokens.isEmpty()) return expr(formula, title, emptyList(), emptyList(), 50f, 48f)
+
+        val totalWidth = maxOf(50f, (tokens.size - 1) * spacing + fontSize)
+        val startX = -totalWidth / 2f + fontSize / 2f
+        val glyphs = tokens.mapIndexed { index, token ->
+            val isExponent = token == "²"
+            g(
+                text = if (isExponent) "2" else token,
+                x = startX + index * spacing,
+                y = if (isExponent) -fontSize * 0.32f else 0f,
+                sz = if (isExponent) fontSize * 0.62f else fontSize,
+                type = if (isExponent) MathTokenType.EXPONENT else MathTokenType.CHAR
+            )
+        }
+        return expr(formula, title, glyphs, emptyList(), totalWidth + 12f, fontSize + 18f)
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

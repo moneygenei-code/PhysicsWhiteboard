@@ -75,3 +75,20 @@ The APK will be generated at `app/build/outputs/apk/debug/app-debug.apk`.
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+---
+
+## Sandbox interaction rules
+
+- **Drag** a symbol or field to move it. While it is held, physics and collision impulses are paused for that body so it cannot slide into another symbol.
+- **Fuse** compatible symbols by releasing them when the highlighted target appears. The result snaps to the midpoint and uses the full rendered equation, for example `p = m·v` or `F = m·a`.
+- **Double-tap** a formula to split it back into its component symbols.
+- A visible **`m` mass falls under gravity** by default, including after fusion. The ground and walls use the app's visual simulation scale rather than SI metres.
+- Rotate `a`, rods, and `E` with their circular handle. An electric field's dashed rectangle, arrows, and force region rotate together.
+- The header provides **Pause**, **Undo**, **Redo**, and **Reset** controls. The trash can clears the board; the action can be undone.
+
+The Gradle wrapper requires a configured JDK 17+ installation. If the wrapper file is not executable on a Unix checkout, run it with:
+
+```bash
+bash ./gradlew testDebugUnitTest
+```

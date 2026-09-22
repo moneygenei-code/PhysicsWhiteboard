@@ -69,7 +69,15 @@ val PALETTE_SYMBOLS = listOf(
     Symbol("p", Color(0xFF795548), "momentum"),
     Symbol("ω", Color(0xFF607D8B), "angular vel."),
     Symbol("r", Color(0xFFE91E63), "radius"),
-    Symbol("T", Color(0xFF4CAF50), "period")
+    Symbol("T", Color(0xFF4CAF50), "period"),
+    // Shared with the simulation engine's field formulas.
+    Symbol("B", Color(0xFF3F51B5), "magnetic field"),
+    Symbol("q", Color(0xFFD32F2F), "charge"),
+    Symbol("I", Color(0xFFFF9800), "current"),
+    Symbol("M", Color(0xFF6D4C41), "large mass"),
+    Symbol("G", Color(0xFF455A64), "gravitational constant"),
+    Symbol("c", Color(0xFF00897B), "speed of light"),
+    Symbol("½", Color(0xFF7B1FA2), "one half")
 )
 
 fun getSymbolByChar(char: String): Symbol? = PALETTE_SYMBOLS.firstOrNull { it.char == char }
@@ -79,6 +87,16 @@ fun tryCombineItems(item1: BoardItem, item2: BoardItem): BoardItem.Formula? {
     if (item1 is BoardItem.Single && item2 is BoardItem.Single) {
         val charSet = setOf(item1.symbol.char, item2.symbol.char)
         val matchedDef = BASE_FORMULAS.firstOrNull { it.requiredSymbols == charSet }
+            ?: SharedFormulaCatalog.exact(charSet)?.let { rule ->
+                FormulaDefinition(
+                    id = rule.id,
+                    formula = rule.formula,
+                    title = rule.title,
+                    description = rule.title,
+                    requiredSymbols = rule.requiredSymbols,
+                    color = Color(0xFF546E7A)
+                )
+            }
         if (matchedDef != null) {
             val midX = (item1.x + item2.x) / 2f
             val midY = (item1.y + item2.y) / 2f

@@ -152,6 +152,16 @@ class FormulaEngineTest {
     }
 
     @Test
+    fun testFieldCombinationUsesSharedCatalog() {
+        val e = makeSingle("E")
+        val b = makeSingle("B")
+
+        val result = tryCombineItems(e, b)
+        assertNotNull("E + B should use the shared field rule", result)
+        assertEquals("v = E/B", result!!.formula)
+    }
+
+    @Test
     fun testInvalidCombinationReturnsNull() {
         val m = makeSingle("m")
         val period = makeSingle("T")

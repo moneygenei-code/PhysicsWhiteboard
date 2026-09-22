@@ -30,7 +30,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -56,12 +55,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Paint
-import androidx.compose.ui.graphics.PaintingStyle
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -73,17 +68,12 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.PI
-import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
-import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -124,11 +114,14 @@ fun PhysicsSandboxApp() {
     var showLernblattDrawer by remember { mutableStateOf(false) }
     var showSceneDropdown by remember { mutableStateOf(false) }
 
-    // Grab & drag state
+    // Grab & drag state. The simulation owns the drag lock so physics cannot
+    // push a body while the pointer is positioning it.
     var draggedBodyId by remember { mutableStateOf<String?>(null) }
-    var draggedDockChar by remember { mutableStateOf<String?>(null) }
     var pointerPos by remember { mutableStateOf(Offset.Zero) }
+    var dragGrabOffset by remember { mutableStateOf(Offset.Zero) }
     var rotateTargetBodyId by remember { mutableStateOf<String?>(null) }
+    var fusionTargetId by remember { mutableStateOf<String?>(null) }
+    var paused by remember { mutableStateOf(simEngine.isPaused) }
 
     var frameTrigger by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
 
@@ -175,11 +168,11 @@ fun PhysicsSandboxApp() {
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = { tapOffset ->
-                            // Double tap on body splits it
-                            val hit = simEngine.bodies.firstOrNull { b ->
-                                !b.isFieldSource && hypot(b.x - tapOffset.x, b.y - tapOffset.y) < 40f
+                            val hit = simEngine.bodies.asReversed().firstOrNull { body ->
+                                BodyGeometry.containsPoint(body, tapOffset.x, tapOffset.y)
                             }
                             if (hit != null && hit.componentChars.size > 1) {
+                                simEngine.saveUndoPoint()
                                 simEngine.splitFormula(hit)
                             }
                         }
@@ -190,32 +183,28 @@ fun PhysicsSandboxApp() {
                         onDragStart = { startOffset ->
                             pointerPos = startOffset
 
-                            // Check rotate handle on directional bodies
-                            val rotateHit = simEngine.bodies.firstOrNull { b ->
-                                if (b.hasThrust || (b.isFieldSource && b.fieldType == FieldType.ELECTRIC_E) || b.isRod) {
-                                    val angle = if (b.isFieldSource) b.fieldAngle else if (b.isRod) b.rodAngle else b.thrustAngle
-                                    val hx = b.x + sin(angle) * 44f
-                                    val hy = b.y - cos(angle) * 44f
-                                    hypot(startOffset.x - hx, startOffset.y - hy) < 28f
-                                } else false
+                            val rotateHit = simEngine.bodies.asReversed().firstOrNull { body ->
+                                BodyGeometry.isOnRotationHandle(body, startOffset.x, startOffset.y)
                             }
-
                             if (rotateHit != null) {
+                                simEngine.saveUndoPoint()
                                 rotateTargetBodyId = rotateHit.id
+                                simEngine.beginDrag(rotateHit)
                                 return@detectDragGestures
                             }
 
-                            // Check body hit
-                            val bodyHit = simEngine.bodies.lastOrNull { b ->
-                                val halfW = if (b.isFieldSource) b.fieldRadius else 40f
-                                val halfH = if (b.isFieldSource) b.fieldRadius else 30f
-                                abs(b.x - startOffset.x) < halfW && abs(b.y - startOffset.y) < halfH
+                            val bodyHit = simEngine.bodies.asReversed().firstOrNull { body ->
+                                BodyGeometry.containsPoint(body, startOffset.x, startOffset.y)
                             }
-
                             if (bodyHit != null) {
                                 draggedBodyId = bodyHit.id
-                                bodyHit.vx = 0f
-                                bodyHit.vy = 0f
+                                dragGrabOffset = Offset(
+                                    startOffset.x - bodyHit.x,
+                                    startOffset.y - bodyHit.y
+                                )
+                                fusionTargetId = null
+                                simEngine.saveUndoPoint()
+                                simEngine.beginDrag(bodyHit)
                             }
                         },
                         onDrag = { change, dragAmount ->
@@ -226,45 +215,61 @@ fun PhysicsSandboxApp() {
                             if (rotBody != null) {
                                 val dx = pointerPos.x - rotBody.x
                                 val dy = pointerPos.y - rotBody.y
-                                val angle = atan2(dy, dx)
-                                if (rotBody.isFieldSource) rotBody.fieldAngle = angle
-                                else if (rotBody.isRod) rotBody.rodAngle = angle
-                                else rotBody.thrustAngle = angle
+                                // The handle is positioned at (sin(theta), -cos(theta)).
+                                val angle = atan2(dx, -dy)
+                                if (rotBody.isFieldSource && rotBody.fieldType == FieldType.ELECTRIC_E) {
+                                    rotBody.fieldAngle = angle
+                                } else if (rotBody.isRod) {
+                                    rotBody.rodAngle = angle
+                                } else {
+                                    rotBody.thrustAngle = angle
+                                }
                                 return@detectDragGestures
                             }
 
                             val draggedBody = simEngine.bodies.firstOrNull { it.id == draggedBodyId }
                             if (draggedBody != null) {
-                                draggedBody.x += dragAmount.x
-                                draggedBody.y += dragAmount.y
-                                draggedBody.vx = dragAmount.x * 40f
-                                draggedBody.vy = dragAmount.y * 40f
+                                val newX = pointerPos.x - dragGrabOffset.x
+                                val newY = pointerPos.y - dragGrabOffset.y
+                                simEngine.moveDraggedBody(draggedBody, newX, newY)
+                                val target = simEngine.findFusionTarget(draggedBody)
+                                if (target != null) {
+                                    simEngine.snapDraggedBodyOutsideTarget(draggedBody, target)
+                                }
+                                fusionTargetId = target?.id
                             }
                         },
                         onDragEnd = {
                             val draggedBody = simEngine.bodies.firstOrNull { it.id == draggedBodyId }
                             if (draggedBody != null) {
-                                // Check if dropped in trash zone (bottom right)
                                 if (draggedBody.x > widthPx - 100f && draggedBody.y > heightPx - 100f) {
-                                    simEngine.bodies.remove(draggedBody)
+                                    simEngine.bodies.removeAll { it.id == draggedBody.id }
+                                    simEngine.cancelDrag(draggedBody)
                                 } else {
-                                    // Check fusion with other bodies
-                                    val other = simEngine.bodies.firstOrNull { o ->
-                                        o.id != draggedBody.id && !o.isFieldSource &&
-                                                hypot(draggedBody.x - o.x, draggedBody.y - o.y) < 60f
-                                    }
-                                    if (other != null) {
-                                        simEngine.tryFuseSymbols(draggedBody, other)
+                                    val target = fusionTargetId
+                                        ?.let { targetId -> simEngine.bodies.firstOrNull { it.id == targetId } }
+                                        ?: simEngine.findFusionTarget(draggedBody)
+                                    if (target != null) {
+                                        if (!simEngine.tryFuseSymbols(draggedBody, target)) {
+                                            simEngine.endDrag(draggedBody)
+                                        }
+                                    } else {
+                                        simEngine.endDrag(draggedBody)
                                     }
                                 }
                             }
 
+                            simEngine.bodies.firstOrNull { it.id == rotateTargetBodyId }?.let { simEngine.endDrag(it) }
                             draggedBodyId = null
                             rotateTargetBodyId = null
+                            fusionTargetId = null
                         },
                         onDragCancel = {
+                            simEngine.bodies.firstOrNull { it.id == draggedBodyId }?.let { simEngine.cancelDrag(it) }
+                            simEngine.bodies.firstOrNull { it.id == rotateTargetBodyId }?.let { simEngine.cancelDrag(it) }
                             draggedBodyId = null
                             rotateTargetBodyId = null
+                            fusionTargetId = null
                         }
                     )
                 }
@@ -291,6 +296,19 @@ fun PhysicsSandboxApp() {
             val bFields = simEngine.bodies.filter { it.isFieldSource && it.fieldType == FieldType.MAGNETIC_B }
             for (bf in bFields) {
                 drawMagneticFieldCircle(bf)
+            }
+
+            // Fusion target feedback: the highlighted body is the only valid
+            // formula target under the dragged symbol.
+            val fusionTarget = fusionTargetId
+                ?.let { targetId -> simEngine.bodies.firstOrNull { it.id == targetId } }
+            if (fusionTarget != null) {
+                drawCircle(
+                    color = Color(0xFF8A6D3B).copy(alpha = 0.18f),
+                    radius = BodyGeometry.collisionRadius(fusionTarget) + 10f,
+                    center = Offset(fusionTarget.x, fusionTarget.y),
+                    style = Stroke(width = 2.5f)
+                )
             }
 
             // 4. Draw Electron Beam Glow Trails
@@ -341,21 +359,19 @@ fun PhysicsSandboxApp() {
                     )
                 }
 
-                // Draw rotation handle if body has thrust or field angle
-                if (b.hasThrust || (b.isFieldSource && b.fieldType == FieldType.ELECTRIC_E) || b.isRod) {
-                    val angle = if (b.isFieldSource) b.fieldAngle else if (b.isRod) b.rodAngle else b.thrustAngle
-                    val hx = b.x + sin(angle) * 44f
-                    val hy = b.y - cos(angle) * 44f
-
+                // Draw rotation handle from the same geometry used by hit testing.
+                val handle = BodyGeometry.rotationHandle(b)
+                if (handle != null) {
+                    val handleOffset = Offset(handle.x, handle.y)
                     drawCircle(
                         color = Color.White.copy(alpha = 0.95f),
                         radius = 12f,
-                        center = Offset(hx, hy)
+                        center = handleOffset
                     )
                     drawCircle(
                         color = InkColor.copy(alpha = 0.5f),
                         radius = 12f,
-                        center = Offset(hx, hy),
+                        center = handleOffset,
                         style = Stroke(width = 1.5f)
                     )
                 }
@@ -387,7 +403,40 @@ fun PhysicsSandboxApp() {
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    paused = !paused
+                    simEngine.setPaused(paused)
+                }) {
+                    Text(
+                        text = if (paused) "▶ Weiter" else "Ⅱ Pause",
+                        fontFamily = FontFamily.Serif,
+                        fontSize = 12.sp,
+                        color = InkColor
+                    )
+                }
+                TextButton(onClick = {
+                    if (simEngine.undo()) frameTrigger = System.nanoTime()
+                }) {
+                    Text(text = "↶", fontSize = 20.sp, color = InkColor)
+                }
+                TextButton(onClick = {
+                    if (simEngine.redo()) frameTrigger = System.nanoTime()
+                }) {
+                    Text(text = "↷", fontSize = 20.sp, color = InkColor)
+                }
+                TextButton(onClick = {
+                    simEngine.loadScene(activeScene)
+                    paused = false
+                }) {
+                    Text(
+                        text = "Reset",
+                        fontFamily = FontFamily.Serif,
+                        fontSize = 12.sp,
+                        color = InkColor
+                    )
+                }
+
                 // Scene Selector Button
                 Box {
                     Surface(
@@ -420,6 +469,7 @@ fun PhysicsSandboxApp() {
                                 onClick = {
                                     activeScene = scene
                                     simEngine.loadScene(scene)
+                                    paused = false
                                     showSceneDropdown = false
                                 }
                             )
@@ -463,6 +513,7 @@ fun PhysicsSandboxApp() {
                                         .size(44.dp)
                                         .background(WireframeTileBg, RoundedCornerShape(10.dp))
                                         .clickable {
+                                            simEngine.saveUndoPoint()
                                             // Spawn directly near center of canvas
                                             val newBody = simEngine.createLetterBody(
                                                 ch,
@@ -500,6 +551,7 @@ fun PhysicsSandboxApp() {
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = {
+                            simEngine.saveUndoPoint()
                             simEngine.bodies.clear()
                             simEngine.electronBeam.clear()
                         }
@@ -605,6 +657,7 @@ fun PhysicsSandboxApp() {
                 onLoadApparatus = { scene ->
                     activeScene = scene
                     simEngine.loadScene(scene)
+                    paused = false
                     showLernblattDrawer = false
                 }
             )
@@ -612,48 +665,57 @@ fun PhysicsSandboxApp() {
     }
 }
 
-// Draw the Electric Field Box with parallel directional arrows
+// Draw the electric field as one rotated object: boundary, arrows, and
+// physics membership all use FieldGeometry's local rectangle.
 fun DrawScope.drawElectricFieldBox(ef: SimBody) {
-    val hs = ef.fieldRadius
-    val cx = ef.x
-    val cy = ef.y
-    val th = ef.fieldAngle
-    val dx = cos(th)
-    val dy = sin(th)
-    val px = -dy
-    val py = dx
-
-    // Dotted boundary rectangle
-    drawRect(
-        color = InkColor.copy(alpha = 0.12f),
-        topLeft = Offset(cx - hs, cy - hs),
-        size = androidx.compose.ui.geometry.Size(hs * 2, hs * 2),
-        style = Stroke(width = 1.4f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(7f, 6f), 0f))
+    val boundary = FieldGeometry.corners(ef).map { Offset(it.x, it.y) }
+    val boundaryPath = Path().apply {
+        moveTo(boundary[0].x, boundary[0].y)
+        for (corner in boundary.drop(1)) lineTo(corner.x, corner.y)
+        close()
+    }
+    drawPath(
+        path = boundaryPath,
+        color = InkColor.copy(alpha = 0.16f),
+        style = Stroke(
+            width = 1.4f,
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(7f, 6f), 0f)
+        )
     )
 
-    // 9 Long Parallel Arrows
+    val halfLength = FieldGeometry.halfLength(ef)
+    val halfWidth = FieldGeometry.halfWidth(ef)
     val n = 7
-    val al = 10f
-    val ah = atan2(dy, dx)
+    val arrowHeadLength = 10f
+    val direction = ef.fieldAngle
+    val dx = cos(direction)
+    val dy = sin(direction)
+    val arrowAngle = atan2(dy, dx)
+
     for (i in 0 until n) {
-        val off = (i - (n - 1) / 2f) * (2f * hs / n)
-        val ax = cx + px * off - dx * (hs - 10f)
-        val ay = cy + py * off - dy * (hs - 10f)
-        val bx = cx + px * off + dx * (hs - 10f)
-        val by = cy + py * off + dy * (hs - 10f)
+        val localOffset = (i - (n - 1) / 2f) * (2f * halfWidth / n)
+        val start = FieldGeometry.localToWorld(ef, -halfLength + 10f, localOffset)
+        val end = FieldGeometry.localToWorld(ef, halfLength - 10f, localOffset)
+        val startOffset = Offset(start.x, start.y)
+        val endOffset = Offset(end.x, end.y)
 
         drawLine(
             color = InkColor.copy(alpha = 0.18f),
-            start = Offset(ax, ay),
-            end = Offset(bx, by),
+            start = startOffset,
+            end = endOffset,
             strokeWidth = 1.5f
         )
 
-        // Arrow head (using lines instead of allocating Path objects)
-        val p1 = Offset(bx - al * cos(ah - 0.42f), by - al * sin(ah - 0.42f))
-        val p2 = Offset(bx - al * cos(ah + 0.42f), by - al * sin(ah + 0.42f))
-        drawLine(color = InkColor.copy(alpha = 0.22f), start = Offset(bx, by), end = p1, strokeWidth = 1.5f)
-        drawLine(color = InkColor.copy(alpha = 0.22f), start = Offset(bx, by), end = p2, strokeWidth = 1.5f)
+        val p1 = Offset(
+            end.x - arrowHeadLength * cos(arrowAngle - 0.42f),
+            end.y - arrowHeadLength * sin(arrowAngle - 0.42f)
+        )
+        val p2 = Offset(
+            end.x - arrowHeadLength * cos(arrowAngle + 0.42f),
+            end.y - arrowHeadLength * sin(arrowAngle + 0.42f)
+        )
+        drawLine(color = InkColor.copy(alpha = 0.22f), start = endOffset, end = p1, strokeWidth = 1.5f)
+        drawLine(color = InkColor.copy(alpha = 0.22f), start = endOffset, end = p2, strokeWidth = 1.5f)
     }
 }
 
