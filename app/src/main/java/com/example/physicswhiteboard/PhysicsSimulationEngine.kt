@@ -55,7 +55,6 @@ data class SimBody(
     var hasGravity: Boolean = false,
     var hasThrust: Boolean = false,
     var thrustAngle: Float = 0f,
-    var hasVelocity: Boolean = false,
     var hasFriction: Boolean = false,
     var isRod: Boolean = false,
     var rodLength: Float = 170f,
@@ -118,7 +117,6 @@ class PhysicsSimulationEngine {
     // Interactive slider parameters for apparatus experiments
     var expVoltageUb: Float = 300f
     var expCurrentIs: Float = 0.60f
-    var expPlateVoltageUk: Float = 150f
 
     private val undoStack = ArrayDeque<SimulationSnapshot>()
     private val redoStack = ArrayDeque<SimulationSnapshot>()
@@ -217,7 +215,6 @@ class PhysicsSimulationEngine {
                 val electron = createLetterBody("e", centerX + 120f, centerY)
                 electron.charge = -1f
                 electron.vy = -sqrt(expVoltageUb / 300f) * 380f
-                electron.hasVelocity = true
                 bodies.add(electron)
             }
 
@@ -383,8 +380,7 @@ class PhysicsSimulationEngine {
             }
             // Velocity tokens rest until thrown so formulas stay easy to build;
             // a thrown v glides (near-vacuum) while a thrown μ damps out fast.
-            "v" -> body.hasVelocity = true
-            "c", "r" -> Unit
+            "v", "c", "r" -> Unit
             "μ" -> {
                 body.hasFriction = true
                 // Falls, but damps quickly so friction is visible when thrown.
@@ -828,12 +824,14 @@ class PhysicsSimulationEngine {
         first.componentChars.addAll(components)
         first.mass = max(first.mass, second.mass)
         first.hasGravity = first.hasGravity || second.hasGravity || components.contains("m")
-        first.hasVelocity = first.hasVelocity || second.hasVelocity || components.contains("v")
         first.hasThrust = firstHadThrust || secondHadThrust || components.contains("a")
         if (!firstHadThrust && secondHadThrust) first.thrustAngle = second.thrustAngle
         first.hasFriction = first.hasFriction || second.hasFriction || components.contains("μ")
         if (first.charge == 0f) first.charge = second.charge
 
+        // A fused current stays splittable no matter which side was dragged:
+        // q+t -> I, then I+B -> UH must split back into q+t+B either way round.
+        first.isFusedCurrent = first.isFusedCurrent || second.isFusedCurrent || plan.createsCurrent
         first.isFieldSource = false
         first.fieldType = FieldType.NONE
         first.isBlackHole = plan.formula == "rs = 2GM/c²"
@@ -851,7 +849,6 @@ class PhysicsSimulationEngine {
             first.componentChars.clear()
             first.componentChars.add("I")
             first.isRod = false
-            first.isFusedCurrent = true
         }
 
         first.isBeingDragged = false

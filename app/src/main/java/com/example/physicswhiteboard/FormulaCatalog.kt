@@ -1,9 +1,9 @@
 package com.example.physicswhiteboard
 
 /**
- * Formula metadata shared by the interactive simulation and the legacy
- * BoardItem formula model. Keeping the symbol requirements here prevents the
- * two engines from silently accepting different base combinations.
+ * Canonical formula metadata for the interactive simulation. The fusion
+ * engine resolves its exact pair rules through this catalog so titles and
+ * symbol requirements stay consistent in one place.
  */
 data class SharedFormulaRule(
     val id: String,

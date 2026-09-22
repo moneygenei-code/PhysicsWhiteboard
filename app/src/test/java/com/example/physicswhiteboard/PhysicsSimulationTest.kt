@@ -419,6 +419,39 @@ class PhysicsSimulationTest {
     }
 
     @Test
+    fun fusedCurrentSurvivesFusionInBothDragDirections() {
+        // I (from q+t) + B -> UH must split back into q+t+B no matter which
+        // body was dragged onto which.
+        listOf(true, false).forEach { currentFirst ->
+            val engine = PhysicsSimulationEngine()
+            engine.bodies.clear()
+            val q = engine.createLetterBody("q", 100f, 100f)
+            val t = engine.createLetterBody("t", 110f, 100f)
+            engine.bodies.add(q)
+            engine.bodies.add(t)
+            assertTrue(engine.tryFuseSymbols(q, t))
+            assertEquals("I", q.char)
+            val b = engine.createLetterBody("B", 120f, 100f)
+            engine.bodies.add(b)
+            val fused = if (currentFirst) {
+                assertTrue(engine.tryFuseSymbols(q, b))
+                q
+            } else {
+                assertTrue(engine.tryFuseSymbols(b, q))
+                b
+            }
+            assertEquals("UH = RH·I·B/d", fused.char)
+            val split = engine.splitFormula(fused)
+            assertEquals(3, split.size)
+            assertTrue(split.any { it.char == "q" })
+            assertTrue(split.any { it.char == "t" })
+            assertTrue(split.any { it.char == "B" })
+            // Splitting restores a working field region, not a dead glyph.
+            assertTrue(split.first { it.char == "B" }.isFieldSource)
+        }
+    }
+
+    @Test
     fun fusedCurrentSplitsBackIntoChargeAndTime() {
         val engine = PhysicsSimulationEngine()
         engine.bodies.clear()
@@ -448,7 +481,8 @@ class PhysicsSimulationTest {
     fun frictionTokenFallsAndDampsWhileVelocityTokenRests() {
         val engine = PhysicsSimulationEngine()
         val v = engine.createLetterBody("v", 100f, 100f)
-        assertTrue(v.hasVelocity)
+        assertFalse(v.hasGravity)
+        assertFalse(v.hasFriction)
         assertEquals(0f, v.vx, 0.001f)
         val mu = engine.createLetterBody("μ", 100f, 100f)
         assertTrue(mu.hasFriction)

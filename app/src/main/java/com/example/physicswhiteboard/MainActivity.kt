@@ -16,6 +16,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,8 +30,10 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -66,6 +69,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -136,6 +140,9 @@ fun PhysicsSandboxApp() {
     var paused by remember { mutableStateOf(simEngine.isPaused) }
     var fusionMode by remember { mutableStateOf(simEngine.fusionMode) }
 
+    // Drop zone for the trash can (bottom-right corner), sized to its visuals.
+    val trashDropPx = with(LocalDensity.current) { 80.dp.toPx() }
+
     // Drag session shared by the canvas and palette drag-in gestures.
     val dragSamples = remember { mutableListOf<Pair<Long, Offset>>() }
     var paletteDragActive by remember { mutableStateOf(false) }
@@ -201,7 +208,7 @@ fun PhysicsSandboxApp() {
                 // Long-press without movement: the tap already spawned the symbol.
                 simEngine.bodies.removeAll { it.id == draggedBody.id }
                 simEngine.cancelDrag(draggedBody)
-            } else if (draggedBody.x > widthPx - 100f && draggedBody.y > heightPx - 100f) {
+            } else if (draggedBody.x > widthPx - trashDropPx && draggedBody.y > heightPx - trashDropPx) {
                 simEngine.bodies.removeAll { it.id == draggedBody.id }
                 simEngine.cancelDrag(draggedBody)
             } else {
@@ -494,7 +501,14 @@ fun PhysicsSandboxApp() {
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Scrolls internally on narrow phones instead of pushing the title off-screen.
+            Row(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 TextButton(onClick = {
                     paused = !paused
                     simEngine.setPaused(paused)
@@ -560,7 +574,7 @@ fun PhysicsSandboxApp() {
                         expanded = showSceneDropdown,
                         onDismissRequest = { showSceneDropdown = false }
                     ) {
-                        ApparatusScene.values().forEach { scene ->
+                        ApparatusScene.entries.forEach { scene ->
                             DropdownMenuItem(
                                 text = {
                                     Column {
@@ -648,10 +662,12 @@ fun PhysicsSandboxApp() {
                 .size(48.dp)
                 .pointerInput(Unit) {
                     detectTapGestures(
-                        onDoubleTap = {
-                            simEngine.saveUndoPoint()
-                            simEngine.bodies.clear()
-                            simEngine.electronBeam.clear()
+                        onTap = {
+                            if (simEngine.bodies.isNotEmpty()) {
+                                simEngine.saveUndoPoint()
+                                simEngine.bodies.clear()
+                                simEngine.electronBeam.clear()
+                            }
                         }
                     )
                 },
@@ -922,7 +938,8 @@ fun LernblattDrawer(
     Surface(
         modifier = Modifier
             .fillMaxHeight()
-            .width(520.dp),
+            .fillMaxWidth(0.94f)
+            .widthIn(max = 520.dp),
         color = Color(0xFFFAF8F5),
         shadowElevation = 16.dp,
         border = androidx.compose.foundation.BorderStroke(1.dp, InkFaint)

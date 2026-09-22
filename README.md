@@ -97,7 +97,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - **Palette**: tap a tile to spawn near the board centre, or long-press and drag a tile to place the symbol exactly (including electrons `e` and fields `E`/`B`).
 - Grabbing prefers small bodies over big field regions, so the Wien `E`-field can be pulled out from under the `B`-circle.
 - Rotate `a`, rods, and `E` with their circular handle. An electric field's dashed rectangle, arrows, and force region rotate together.
-- The header provides **Pause**, **Undo**, **Redo**, **Reset**, and the **∑ Physik / abc Normal** mode toggle. The trash can clears the board; the action can be undone.
+- The header provides **Pause**, **Undo**, **Redo**, **Reset**, and the **∑ Physik / abc Normal** mode toggle. Tap the trash can to clear the board, or drag a single symbol onto it to delete just that one; both actions can be undone.
+- The layout adapts to phones: the header controls scroll horizontally and the study drawer fills at most 94% of narrow screens.
 
 The Gradle wrapper requires a configured JDK 17+ installation. If the wrapper file is not executable on a Unix checkout, run it with:
 
