@@ -1,11 +1,15 @@
 package com.example.physicswhiteboard
 
+import java.util.ArrayDeque
+import java.util.UUID
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
-import java.util.UUID
 
 enum class FieldType {
     NONE,
@@ -20,6 +24,15 @@ enum class ApparatusScene(val displayName: String, val chapterRef: String) {
     MASS_SPECTROMETER("Massenspektrometer (Bainbridge)", "Kapitel 9 · Isotopentrennung"),
     DEFLECTION_CAPACITOR("E-Feld: Längs- & Querfeld", "Kapitel 5 · Parabelbahn"),
     HALL_EFFECT("Hall-Effekt", "Kapitel 10 · Hallspannung")
+}
+
+object PhysicsConstants {
+    const val gravityAcceleration = 2200f
+    const val thrustAcceleration = 1300f
+    const val nearVacuumDrag = 0.018f
+    const val frictionStrength = 8f
+    const val groundRestitution = 0.42f
+    const val wallRestitution = 0.62f
 }
 
 data class SimBody(
@@ -41,21 +54,39 @@ data class SimBody(
     var isFieldSource: Boolean = false,
     var fieldType: FieldType = FieldType.NONE,
     var fieldRadius: Float = 160f,
-    var fieldAngle: Float = 0f, // For E field direction
+    var fieldHalfWidth: Float = 100f,
+    var fieldAngle: Float = 0f,
     var fieldMagnitude: Float = 1500f,
-    var bDirectionZ: Int = 1, // +1 for out (dots/⊙), -1 for in (crosses/⊗)
+    var bDirectionZ: Int = 1,
     var char: String = "",
     var renderedExpr: RenderedExpression? = null,
     val componentChars: MutableList<String> = mutableListOf(),
     var isBlackHole: Boolean = false,
     var blackHoleRadius: Float = 0f,
-    var age: Float = 0f
+    var age: Float = 0f,
+    /** Pointer interaction owns this body while true; the physics loop leaves it alone. */
+    var isBeingDragged: Boolean = false,
+    /** A short grace period prevents a freshly fused body from being re-collided. */
+    var collisionGraceFrames: Int = 0
 )
 
 data class ElectronBeamPoint(
     val x: Float,
     val y: Float,
     val alpha: Float = 1f
+)
+
+private data class FusionPlan(
+    val formula: String,
+    val title: String,
+    val components: List<String>,
+    val createsRod: Boolean = false,
+    val createsCurrent: Boolean = false
+)
+
+data class SimulationSnapshot(
+    val bodies: List<SimBody>,
+    val electronBeam: List<ElectronBeamPoint>
 )
 
 class PhysicsSimulationEngine {
@@ -66,83 +97,85 @@ class PhysicsSimulationEngine {
     var groundY: Float = 800f
     var canvasWidth: Float = 1200f
     var canvasHeight: Float = 1000f
-
     var activeScene: ApparatusScene = ApparatusScene.FREE_SANDBOX
+    var isPaused: Boolean = false
+        private set
 
     // Interactive slider parameters for apparatus experiments
-    var expVoltageUb: Float = 300f   // 100 V – 500 V (Fadenstrahlrohr / Wien)
-    var expCurrentIs: Float = 0.60f  // 0.1 A – 1.5 A (Helmholtz coils)
-    var expPlateVoltageUk: Float = 150f // 50 V – 300 V (Wien / Deflection)
+    var expVoltageUb: Float = 300f
+    var expCurrentIs: Float = 0.60f
+    var expPlateVoltageUk: Float = 150f
+
+    private val undoStack = ArrayDeque<SimulationSnapshot>()
+    private val redoStack = ArrayDeque<SimulationSnapshot>()
+    private val maxHistoryEntries = 40
 
     init {
         loadScene(ApparatusScene.FREE_SANDBOX)
     }
 
+    fun togglePaused() {
+        isPaused = !isPaused
+    }
+
+    fun setPaused(paused: Boolean) {
+        isPaused = paused
+    }
+
     fun loadScene(scene: ApparatusScene) {
         activeScene = scene
+        isPaused = false
         bodies.clear()
         electronBeam.clear()
+        clearUndoHistory()
 
         when (scene) {
             ApparatusScene.FREE_SANDBOX -> {
                 val m = createLetterBody("m", canvasWidth * 0.35f, groundY - 30f)
-                m.hasGravity = true
                 bodies.add(m)
-                val v = createLetterBody("v", canvasWidth * 0.45f, groundY - 30f)
-                bodies.add(v)
+                bodies.add(createLetterBody("v", canvasWidth * 0.45f, groundY - 30f))
             }
 
             ApparatusScene.WIEN_FILTER -> {
                 val centerX = canvasWidth * 0.5f
                 val centerY = canvasHeight * 0.45f
 
-                // Downward E-field (plates above/below beam path)
-                // E-Field and B-field sharing the exact same region (fieldRadius = 150f)
-                val eField = SimBody(
-                    x = centerX, y = centerY,
-                    isFieldSource = true, fieldType = FieldType.ELECTRIC_E,
-                    fieldRadius = 150f,
-                    fieldAngle = (PI / 2).toFloat(), // Points downward (+Y in screen coords)
-                    fieldMagnitude = 1400f,
-                    char = "E",
-                    renderedExpr = FormulaTypesetter.buildExpression("E", "Elektrisches Feld")
+                val eField = createElectricFieldSource(
+                    x = centerX,
+                    y = centerY,
+                    radius = 150f,
+                    angle = (PI / 2).toFloat(),
+                    magnitude = 5880f,
+                    label = "E",
+                    title = "Elektrisches Feld"
                 )
                 bodies.add(eField)
 
-                // B out-of-page (⊙) — Lorentz force on +q moving right is upward (-Y)
                 val bField = SimBody(
                     x = centerX, y = centerY,
                     isFieldSource = true, fieldType = FieldType.MAGNETIC_B,
                     fieldRadius = 150f, bDirectionZ = 1,
                     fieldMagnitude = 1400f,
                     char = "B",
+                    componentChars = mutableListOf("B"),
                     renderedExpr = FormulaTypesetter.buildExpression("B", "Magnetisches Feld")
                 )
                 bodies.add(bField)
 
-                // Balanced particle: Fel = FL → a_E = 1400, a_L = omega * vx = (1400 / 100) * vx = 14 * vx
-                // Equilibrium velocity: vx = 1400 / 14 = 100f (or scaled appropriately)
-                // Let's set fieldMagnitude:
-                // For vx = 420f: we want omega * 420 = a_E
-                // (B_mag / 100) * 420 = E_mag. If E_mag = 1400, then B_mag = 1400 * 100 / 420 = 333.33f
-                // Or if B_mag = 1400, then omega = 14. E_mag = 14 * 420 = 5880f!
-                // Let's set E_mag = 5880f and B_mag = 1400f, so for vx = 420: a_E = 5880, FL_acc = 14 * 420 = 5880 -> exact balance!
-                eField.fieldMagnitude = 5880f
-                bField.fieldMagnitude = 1400f
-
-                // Start particles at the entrance of the field region
-                val qPassed = createLetterBody("q", centerX - 140f, centerY)
-                qPassed.charge = 1f; qPassed.vx = 420f
+                // Balanced particle: Fel = FL for vx = 420 in the scaled scene.
+                val qPassed = createLetterBody("q", centerX - 100f, centerY)
+                qPassed.charge = 1f
+                qPassed.vx = 420f
                 bodies.add(qPassed)
 
-                // Fast particle: FL > Fel → deflects upward (-Y)
-                val qFast = createLetterBody("q", centerX - 140f, centerY - 30f)
-                qFast.charge = 1f; qFast.vx = 650f
+                val qFast = createLetterBody("q", centerX - 100f, centerY - 110f)
+                qFast.charge = 1f
+                qFast.vx = 650f
                 bodies.add(qFast)
 
-                // Slow particle: Fel > FL → deflects downward (+Y)
-                val qSlow = createLetterBody("q", centerX - 140f, centerY + 30f)
-                qSlow.charge = 1f; qSlow.vx = 220f
+                val qSlow = createLetterBody("q", centerX - 100f, centerY + 110f)
+                qSlow.charge = 1f
+                qSlow.vx = 220f
                 bodies.add(qSlow)
             }
 
@@ -156,11 +189,11 @@ class PhysicsSimulationEngine {
                     fieldRadius = 240f, bDirectionZ = 1,
                     fieldMagnitude = expCurrentIs * 2000f,
                     char = "B",
+                    componentChars = mutableListOf("B"),
                     renderedExpr = FormulaTypesetter.buildExpression("B", "Helmholtz-Feld")
                 )
                 bodies.add(bField)
 
-                // Electron from gun — v₀ = √(2eUB/me), enters perpendicular to B
                 val electron = createLetterBody("e", centerX - 120f, centerY)
                 electron.charge = -1f
                 electron.vy = -sqrt(expVoltageUb / 300f) * 380f
@@ -172,56 +205,63 @@ class PhysicsSimulationEngine {
                 val startX = canvasWidth * 0.28f
                 val startY = canvasHeight * 0.42f
 
-                val eFilter = SimBody(
-                    x = startX, y = startY,
-                    isFieldSource = true, fieldType = FieldType.ELECTRIC_E,
-                    fieldRadius = 120f, fieldAngle = (PI / 2).toFloat(),
-                    fieldMagnitude = 1200f,
-                    char = "E",
-                    renderedExpr = FormulaTypesetter.buildExpression("E", "Filter E-Feld")
+                bodies.add(
+                    createElectricFieldSource(
+                        x = startX,
+                        y = startY,
+                        radius = 120f,
+                        angle = (PI / 2).toFloat(),
+                        magnitude = 1200f,
+                        label = "E",
+                        title = "Filter E-Feld"
+                    )
                 )
-                bodies.add(eFilter)
 
                 val analyzerX = startX + 220f
                 val analyzerY = startY + 60f
-                val bAnalyzer = SimBody(
-                    x = analyzerX, y = analyzerY,
-                    isFieldSource = true, fieldType = FieldType.MAGNETIC_B,
-                    fieldRadius = 220f, bDirectionZ = 1,
-                    fieldMagnitude = 1200f,
-                    char = "B",
-                    renderedExpr = FormulaTypesetter.buildExpression("B", "Analysator-Feld")
+                bodies.add(
+                    SimBody(
+                        x = analyzerX, y = analyzerY,
+                        isFieldSource = true, fieldType = FieldType.MAGNETIC_B,
+                        fieldRadius = 220f, bDirectionZ = 1,
+                        fieldMagnitude = 1200f,
+                        char = "B",
+                        componentChars = mutableListOf("B"),
+                        renderedExpr = FormulaTypesetter.buildExpression("B", "Analysator-Feld")
+                    )
                 )
-                bodies.add(bAnalyzer)
 
-                // ²⁰Ne — lighter, smaller radius r₁
                 val ionNe20 = createLetterBody("²⁰Ne", startX - 160f, startY)
-                ionNe20.charge = 1f; ionNe20.mass = 20f; ionNe20.vx = 360f
+                ionNe20.charge = 1f
+                ionNe20.mass = 20f
+                ionNe20.vx = 360f
                 bodies.add(ionNe20)
 
-                // ²²Ne — heavier, larger radius r₂ > r₁
                 val ionNe22 = createLetterBody("²²Ne", startX - 160f, startY - 15f)
-                ionNe22.charge = 1f; ionNe22.mass = 22f; ionNe22.vx = 360f
+                ionNe22.charge = 1f
+                ionNe22.mass = 22f
+                ionNe22.vx = 360f
                 bodies.add(ionNe22)
             }
 
             ApparatusScene.DEFLECTION_CAPACITOR -> {
                 val centerX = canvasWidth * 0.45f
                 val centerY = canvasHeight * 0.45f
-
-                val eField = SimBody(
-                    x = centerX, y = centerY,
-                    isFieldSource = true, fieldType = FieldType.ELECTRIC_E,
-                    fieldRadius = 180f, fieldAngle = (PI / 2).toFloat(),
-                    fieldMagnitude = 1600f,
-                    char = "E",
-                    renderedExpr = FormulaTypesetter.buildExpression("E", "Ablenkfeld")
+                bodies.add(
+                    createElectricFieldSource(
+                        x = centerX,
+                        y = centerY,
+                        radius = 180f,
+                        angle = (PI / 2).toFloat(),
+                        magnitude = 1600f,
+                        label = "E",
+                        title = "Ablenkfeld"
+                    )
                 )
-                bodies.add(eField)
 
-                // Electron fired horizontally — parabolic trajectory inside capacitor
                 val electron = createLetterBody("e", centerX - 240f, centerY)
-                electron.charge = -1f; electron.vx = 480f
+                electron.charge = -1f
+                electron.vx = 480f
                 bodies.add(electron)
             }
 
@@ -229,159 +269,271 @@ class PhysicsSimulationEngine {
                 val centerX = canvasWidth * 0.48f
                 val centerY = canvasHeight * 0.45f
 
-                // Conducting plate
-                val conductor = SimBody(
-                    x = centerX, y = centerY,
-                    isRod = true, rodLength = 260f, rodAngle = 0f,
-                    char = "t",
-                    renderedExpr = FormulaTypesetter.buildExpression("I", "Leiterplättchen")
+                bodies.add(
+                    SimBody(
+                        x = centerX, y = centerY,
+                        isRod = true, rodLength = 260f, rodAngle = 0f,
+                        char = "t",
+                        renderedExpr = FormulaTypesetter.buildExpression("I", "Leiterplättchen")
+                    )
                 )
-                bodies.add(conductor)
 
-                // Perpendicular B-field (into page)
-                val bField = SimBody(
-                    x = centerX, y = centerY,
-                    isFieldSource = true, fieldType = FieldType.MAGNETIC_B,
-                    fieldRadius = 160f, bDirectionZ = -1, // Into page (×)
-                    fieldMagnitude = 1800f,
-                    char = "B",
-                    renderedExpr = FormulaTypesetter.buildExpression("B", "Magnetfeld ⊗")
+                bodies.add(
+                    SimBody(
+                        x = centerX, y = centerY,
+                        isFieldSource = true, fieldType = FieldType.MAGNETIC_B,
+                        fieldRadius = 160f, bDirectionZ = -1,
+                        fieldMagnitude = 1800f,
+                        char = "B",
+                        componentChars = mutableListOf("B"),
+                        renderedExpr = FormulaTypesetter.buildExpression("B", "Magnetfeld ⊗")
+                    )
                 )
-                bodies.add(bField)
 
-                // Mobile electrons drifting rightward along conductor (conventional I is rightward)
                 for (i in 0..5) {
-                    val e = createLetterBody("e", centerX - 120f + (i * 40f), centerY)
-                    e.charge = -1f; e.vx = 85f
-                    bodies.add(e)
+                    val electron = createLetterBody("e", centerX - 120f + (i * 40f), centerY)
+                    electron.charge = -1f
+                    electron.vx = 85f
+                    bodies.add(electron)
                 }
             }
         }
+    }
+
+    private fun createElectricFieldSource(
+        x: Float,
+        y: Float,
+        radius: Float,
+        angle: Float,
+        magnitude: Float,
+        label: String,
+        title: String
+    ): SimBody {
+        return SimBody(
+            x = x,
+            y = y,
+            isFieldSource = true,
+            fieldType = FieldType.ELECTRIC_E,
+            fieldRadius = radius,
+            // A rectangular region makes a quarter-turn visible; unlike the
+            // old drawRect, this same geometry also drives force membership.
+            fieldHalfWidth = radius * 0.67f,
+            fieldAngle = angle,
+            fieldMagnitude = magnitude,
+            char = label,
+            componentChars = mutableListOf(label),
+            renderedExpr = FormulaTypesetter.buildExpression(label, title)
+        )
     }
 
     fun createLetterBody(char: String, x: Float, y: Float): SimBody {
         val expr = FormulaTypesetter.buildExpression(char, char)
-        val body = SimBody(x = x, y = y, char = char, renderedExpr = expr,
-            componentChars = mutableListOf(char))
+        val body = SimBody(
+            x = x,
+            y = y,
+            char = char,
+            renderedExpr = expr,
+            componentChars = mutableListOf(char)
+        )
 
         when (char) {
-            "m"  -> body.mass = 1.0f
-            "M"  -> body.mass = 3.0f
-            "g"  -> body.hasGravity = true
-            "a"  -> { body.hasThrust = true; body.thrustAngle = 0f }
-            "v"  -> body.hasVelocity = true
-            "r"  -> {} // Radius symbol — no special physics
-            "μ"  -> body.hasFriction = true
-            "t"  -> { body.isRod = true; body.rodLength = 170f }
-            "q"  -> body.charge = 1.0f
-            "e"  -> { body.charge = -1.0f; body.mass = 0.5f }
-            "B"  -> { body.isFieldSource = true; body.fieldType = FieldType.MAGNETIC_B; body.fieldRadius = 150f }
-            "E"  -> { body.isFieldSource = true; body.fieldType = FieldType.ELECTRIC_E; body.fieldRadius = 160f; body.fieldAngle = 0f }
-            "I"  -> {} // Current — visual only
-            "½"  -> {} // Half coefficient
-            "c"  -> {} // Speed of light coefficient
-            "G"  -> body.mass = 2.0f // Gravitational constant — heavier for visual
+            "m" -> {
+                body.mass = 1.0f
+                body.hasGravity = true
+            }
+            "M" -> {
+                body.mass = 3.0f
+                body.hasGravity = true
+            }
+            "g" -> body.hasGravity = true
+            "a" -> {
+                body.hasThrust = true
+                body.thrustAngle = 0f
+            }
+            "v" -> body.hasVelocity = true
+            "r" -> Unit
+            "μ" -> body.hasFriction = true
+            "t" -> {
+                body.isRod = true
+                body.rodLength = 170f
+            }
+            "q" -> body.charge = 1.0f
+            "e" -> {
+                body.charge = -1.0f
+                body.mass = 0.5f
+            }
+            "B" -> {
+                body.isFieldSource = true
+                body.fieldType = FieldType.MAGNETIC_B
+                body.fieldRadius = 150f
+            }
+            "E" -> {
+                body.isFieldSource = true
+                body.fieldType = FieldType.ELECTRIC_E
+                body.fieldRadius = 160f
+                body.fieldHalfWidth = 100f
+                body.fieldAngle = 0f
+            }
+            "I", "½", "c" -> Unit
+            "G" -> body.mass = 2.0f
         }
         return body
     }
 
+    fun beginDrag(body: SimBody) {
+        body.isBeingDragged = true
+        body.vx = 0f
+        body.vy = 0f
+        body.collisionGraceFrames = 0
+    }
+
+    fun moveDraggedBody(body: SimBody, x: Float, y: Float) {
+        if (!body.isBeingDragged) return
+        body.x = x
+        body.y = y
+        body.vx = 0f
+        body.vy = 0f
+    }
+
+    /** Keep the two glyphs readable during the last few pixels before fusion. */
+    fun snapDraggedBodyOutsideTarget(dragged: SimBody, target: SimBody) {
+        if (!dragged.isBeingDragged) return
+        val dx = dragged.x - target.x
+        val dy = dragged.y - target.y
+        val distance = hypot(dx, dy)
+        val minimumDistance = BodyGeometry.fusionPreviewDistance(dragged, target)
+        if (distance >= minimumDistance) return
+
+        val (nx, ny) = if (distance > 0.001f) {
+            dx / distance to dy / distance
+        } else if (((dragged.id.hashCode() xor target.id.hashCode()) and 1) == 0) {
+            1f to 0f
+        } else {
+            0f to 1f
+        }
+        dragged.x = target.x + nx * minimumDistance
+        dragged.y = target.y + ny * minimumDistance
+        dragged.vx = 0f
+        dragged.vy = 0f
+    }
+
+    fun endDrag(body: SimBody, releaseVx: Float = 0f, releaseVy: Float = 0f) {
+        body.isBeingDragged = false
+        body.vx = releaseVx
+        body.vy = releaseVy
+        body.collisionGraceFrames = max(body.collisionGraceFrames, 2)
+    }
+
+    fun cancelDrag(body: SimBody) {
+        endDrag(body)
+    }
+
+    fun findFusionTarget(dragged: SimBody): SimBody? {
+        return bodies
+            .asSequence()
+            .filter { it.id != dragged.id }
+            .filter { canFuseSymbols(dragged, it) }
+            .filter { BodyGeometry.isWithinFusionDistance(dragged, it) }
+            .minByOrNull { hypot(dragged.x - it.x, dragged.y - it.y) }
+    }
+
     // ──────────────────────────────────────────────────────────────────────────
-    // Physics step — 60 FPS, dt ≈ 0.016 s
+    // Physics step — stable for 60/120 FPS and deterministic in unit tests.
     // ──────────────────────────────────────────────────────────────────────────
     fun step(dt: Float) {
+        if (isPaused) return
+        val safeDt = dt.coerceIn(0.001f, 0.033f)
         val bFields = bodies.filter { it.isFieldSource && it.fieldType == FieldType.MAGNETIC_B }
         val eFields = bodies.filter { it.isFieldSource && it.fieldType == FieldType.ELECTRIC_E }
 
-        // 4. Fade beam trail efficiently
         if (electronBeam.isNotEmpty()) {
             val iter = electronBeam.iterator()
             while (iter.hasNext()) {
-                val pt = iter.next()
-                if (pt.alpha <= 0.08f) {
-                    iter.remove()
-                }
+                if (iter.next().alpha <= 0.08f) iter.remove()
             }
             for (i in electronBeam.indices) {
-                electronBeam[i] = electronBeam[i].copy(alpha = electronBeam[i].alpha - dt * 2.5f)
+                electronBeam[i] = electronBeam[i].copy(
+                    alpha = (electronBeam[i].alpha - safeDt * 2.5f).coerceAtLeast(0f)
+                )
             }
         }
 
         for (body in bodies) {
-            body.age += dt
-            if (body.isFieldSource || body.isRod) continue
+            body.age += safeDt
+            if (body.collisionGraceFrames > 0) body.collisionGraceFrames--
+            if (body.isFieldSource || body.isRod || body.isBeingDragged) continue
 
-            // 1. Gravity: F = mg
-            if (body.hasGravity) body.vy += 2200f * dt
+            if (body.hasGravity) body.vy += PhysicsConstants.gravityAcceleration * safeDt
 
-            // 2. Thrust: F = ma in thrust direction
             if (body.hasThrust) {
-                body.vx += 1300f * cos(body.thrustAngle) * dt
-                body.vy += 1300f * sin(body.thrustAngle) * dt
+                body.vx += PhysicsConstants.thrustAcceleration * cos(body.thrustAngle) * safeDt
+                body.vy += PhysicsConstants.thrustAcceleration * sin(body.thrustAngle) * safeDt
             }
 
-            // 3. Electromagnetic forces (only if charged)
             if (body.charge != 0f) {
-                // Electric force: F = qE
                 for (ef in eFields) {
-                    if (Math.abs(body.x - ef.x) <= ef.fieldRadius &&
-                        Math.abs(body.y - ef.y) <= ef.fieldRadius) {
-                        val acc = (ef.fieldMagnitude * body.charge / body.mass) * dt
-                        body.vx += cos(ef.fieldAngle) * acc
-                        body.vy += sin(ef.fieldAngle) * acc
+                    if (FieldGeometry.contains(ef, body.x, body.y)) {
+                        val acceleration = (ef.fieldMagnitude * body.charge /
+                                body.mass.coerceAtLeast(0.001f)) * safeDt
+                        body.vx += cos(ef.fieldAngle) * acceleration
+                        body.vy += sin(ef.fieldAngle) * acceleration
                     }
                 }
 
-                // Magnetic Lorentz force: F = q(v × B)
-                // In right-handed coords: v=(vx, 0, 0), B=(0, 0, B_z) -> F = q*(0, -vx*B_z, 0).
-                // In screen coords (+y downward), B out of screen (bz = +1):
-                // v x B gives upward force (-y direction).
-                // For exact rotation preserving |v|:
-                // dvy/dt = -omega * vx -> rotation angle dθ = -omega * dt.
                 for (bf in bFields) {
                     val dist = hypot(body.x - bf.x, body.y - bf.y)
                     if (dist <= bf.fieldRadius && hypot(body.vx, body.vy) > 1f) {
                         val omega = (bf.fieldMagnitude / 100f) *
-                                body.charge * bf.bDirectionZ.toFloat() / body.mass
-                        val dθ = -omega * dt
-                        val cθ = cos(dθ); val sθ = sin(dθ)
-                        val nvx = cθ * body.vx - sθ * body.vy
-                        val nvy = sθ * body.vx + cθ * body.vy
-                        body.vx = nvx; body.vy = nvy
+                                body.charge * bf.bDirectionZ.toFloat() /
+                                        body.mass.coerceAtLeast(0.001f)
+                        val deltaAngle = -omega * safeDt
+                        val c = cos(deltaAngle)
+                        val s = sin(deltaAngle)
+                        val nextVx = c * body.vx - s * body.vy
+                        val nextVy = s * body.vx + c * body.vy
+                        body.vx = nextVx
+                        body.vy = nextVy
                     }
                 }
             }
 
-            // 4. Damping
             if (body.hasFriction) {
-                // Kinetic friction (μ): significant sliding drag
-                val factor = (1f - 8f * dt).coerceAtLeast(0.01f)
-                body.vx *= factor; body.vy *= factor
+                val factor = (1f - PhysicsConstants.frictionStrength * safeDt).coerceAtLeast(0.01f)
+                body.vx *= factor
+                body.vy *= factor
             } else {
-                // Near-vacuum: ~0.3% speed loss per frame @60fps
-                val drag = 1f - 0.018f * dt
-                body.vx *= drag; body.vy *= drag
+                val drag = 1f - PhysicsConstants.nearVacuumDrag * safeDt
+                body.vx *= drag
+                body.vy *= drag
             }
 
-            // 5. Euler integration
-            body.x += body.vx * dt
-            body.y += body.vy * dt
+            body.x += body.vx * safeDt
+            body.y += body.vy * safeDt
 
-            // Emit glow trail for moving charges (cap tightly at 120 points to preserve 120 FPS performance)
             if (body.charge != 0f && hypot(body.vx, body.vy) > 25f && electronBeam.size < 120) {
                 electronBeam.add(ElectronBeamPoint(body.x, body.y, 0.88f))
             }
 
-            // 6. Boundary collisions
-            val hH = 22f; val hW = 24f
-            if (body.y + hH > groundY) {
-                body.y = groundY - hH
-                body.vy = -body.vy * 0.42f
-                if (Math.abs(body.vy) < 55f) body.vy = 0f
+            val extents = BodyGeometry.collisionHalfExtents(body)
+            val halfHeight = extents.halfHeight
+            val halfWidth = extents.halfWidth
+            if (body.y + halfHeight > groundY) {
+                body.y = groundY - halfHeight
+                body.vy = -body.vy * PhysicsConstants.groundRestitution
+                if (abs(body.vy) < 55f) body.vy = 0f
                 body.vx *= 0.88f
             }
-            if (body.x - hW < 10f) { body.x = 10f + hW; body.vx = -body.vx * 0.62f }
-            else if (body.x + hW > canvasWidth - 10f) { body.x = canvasWidth - 10f - hW; body.vx = -body.vx * 0.62f }
-            if (body.y - hH < 10f) { body.y = 10f + hH; body.vy = -body.vy * 0.62f }
+            if (body.x - halfWidth < 10f) {
+                body.x = 10f + halfWidth
+                body.vx = -body.vx * PhysicsConstants.wallRestitution
+            } else if (body.x + halfWidth > canvasWidth - 10f) {
+                body.x = canvasWidth - 10f - halfWidth
+                body.vx = -body.vx * PhysicsConstants.wallRestitution
+            }
+            if (body.y - halfHeight < 10f) {
+                body.y = 10f + halfHeight
+                body.vy = -body.vy * PhysicsConstants.wallRestitution
+            }
         }
 
         handleCollisions()
@@ -389,145 +541,259 @@ class PhysicsSimulationEngine {
 
     private fun handleCollisions() {
         for (i in bodies.indices) {
-            val b1 = bodies[i]
-            if (b1.isFieldSource) continue
+            val first = bodies[i]
+            if (first.isFieldSource || first.isBeingDragged || first.collisionGraceFrames > 0) continue
+
             for (j in i + 1 until bodies.size) {
-                val b2 = bodies[j]
-                if (b2.isFieldSource) continue
-                val dx = b2.x - b1.x; val dy = b2.y - b1.y
-                val dist = hypot(dx, dy); val minDist = 48f
-                if (dist in 1f..minDist) {
-                    val nx = dx / dist; val ny = dy / dist
-                    val overlap = minDist - dist
-                    b1.x -= nx * overlap * 0.5f; b1.y -= ny * overlap * 0.5f
-                    b2.x += nx * overlap * 0.5f; b2.y += ny * overlap * 0.5f
-                    val relVel = (b1.vx - b2.vx) * nx + (b1.vy - b2.vy) * ny
-                    if (relVel > 0) {
-                        val totalMass = b1.mass + b2.mass
-                        val impulse = 1.6f * relVel / totalMass
-                        b1.vx -= impulse * b2.mass * nx; b1.vy -= impulse * b2.mass * ny
-                        b2.vx += impulse * b1.mass * nx; b2.vy += impulse * b1.mass * ny
+                val second = bodies[j]
+                if (second.isFieldSource || second.isBeingDragged || second.collisionGraceFrames > 0) continue
+
+                val dx = second.x - first.x
+                val dy = second.y - first.y
+                val distance = hypot(dx, dy)
+                val minimumDistance = BodyGeometry.collisionRadius(first) +
+                        BodyGeometry.collisionRadius(second)
+                if (distance >= minimumDistance) continue
+
+                val (nx, ny) = if (distance > 0.001f) {
+                    dx / distance to dy / distance
+                } else {
+                    // Pointer movement can place two bodies at exactly one point.
+                    // A stable fallback makes the separation deterministic.
+                    if (((first.id.hashCode() xor second.id.hashCode()) and 1) == 0) {
+                        1f to 0f
+                    } else {
+                        0f to 1f
                     }
+                }
+
+                val overlap = minimumDistance - distance
+                first.x -= nx * overlap * 0.5f
+                first.y -= ny * overlap * 0.5f
+                second.x += nx * overlap * 0.5f
+                second.y += ny * overlap * 0.5f
+
+                val relativeVelocity = (first.vx - second.vx) * nx +
+                        (first.vy - second.vy) * ny
+                if (relativeVelocity > 0f) {
+                    val totalMass = (first.mass + second.mass).coerceAtLeast(0.001f)
+                    val impulse = 1.6f * relativeVelocity / totalMass
+                    first.vx -= impulse * second.mass * nx
+                    first.vy -= impulse * second.mass * ny
+                    second.vx += impulse * first.mass * nx
+                    second.vy += impulse * first.mass * ny
                 }
             }
         }
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Symbol fusion — drag two symbols together to form physics equations
-    // All key Klausur formulas are covered here.
+    // Symbol fusion — drag symbols together to form physics equations.
     // ──────────────────────────────────────────────────────────────────────────
-    fun tryFuseSymbols(b1: SimBody, b2: SimBody): Boolean {
-        val chars = (b1.componentChars + b2.componentChars).distinct()
-        val cs = chars.toSet()
+    fun canFuseSymbols(first: SimBody, second: SimBody): Boolean =
+        fusionPlan((first.componentChars + second.componentChars).toSet()) != null
 
-        when {
-            // ── Newton / Kinematics ──────────────────────────────────────────
-            cs == setOf("m", "a") ->
-                fuseInto(b1, b2, "F = m·a", "Newton 2. Gesetz", chars)
-
-            cs == setOf("m", "v") ->
-                fuseInto(b1, b2, "p = m·v", "Impuls", chars)
-
-            cs == setOf("v", "r") ->
-                fuseInto(b1, b2, "a = v² / r", "Zentripetalbeschleunigung", chars)
-
-            cs.containsAll(listOf("m", "v", "r")) ->
-                fuseInto(b1, b2, "F = m·v² / r", "Zentripetalkraft", chars)
-
-            // ── Energy ──────────────────────────────────────────────────────
-            (cs == setOf("m", "½") || cs == setOf("m", "v", "½")) ->
-                fuseInto(b1, b2, "E = ½·m·v²", "Kinetische Energie", chars)
-
-            cs == setOf("m", "c") ->
-                fuseInto(b1, b2, "E = m·c²", "Masse-Energie-Äquivalenz", chars)
-
-            cs.containsAll(listOf("G", "M", "m")) ->
-                fuseInto(b1, b2, "F = G·M·m / r²", "Gravitationsgesetz", chars)
-
-            cs.containsAll(listOf("G", "M", "c")) -> {
-                fuseInto(b1, b2, "2GM / c²", "Schwarzschild-Radius", chars)
-                b1.isBlackHole = true; b1.blackHoleRadius = 55f
-            }
-
-            // ── Electricity & Magnetism — Klausur core ────────────────────
-            // Wien-Filter: v = E/B
-            cs == setOf("E", "B") ->
-                fuseInto(b1, b2, "v = E/B", "Wien-Filter Durchlassbedingung", chars)
-
-            // Lorentz force: FL = qvB
-            cs.containsAll(listOf("q", "v", "B")) ->
-                fuseInto(b1, b2, "FL = q·v·B", "Lorentzkraft", chars)
-
-            // Kreisbahn: r = mv/(qB)
-            cs.containsAll(listOf("m", "v", "q", "B")) ->
-                fuseInto(b1, b2, "r = m·v / (q·B)", "Kreisbahnradius im B-Feld", chars)
-
-            // Umlaufzeit: T = 2πm/(qB)  [m + B → T = 2πm/qB]
-            cs == setOf("m", "B") ->
-                fuseInto(b1, b2, "T = 2π·m / (q·B)", "Umlaufdauer (v-unabhängig!)", chars)
-
-            // Electric force: F = qE
-            cs == setOf("q", "E") ->
-                fuseInto(b1, b2, "F = q·E", "Elektrische Kraft", chars)
-
-            // Electron gun: v = √(2qU/m)  [q + m]
-            cs == setOf("q", "m") ->
-                fuseInto(b1, b2, "v = √(2qU/m)", "Elektronenkanone: v aus UB", chars)
-
-            // Hall voltage: UH = RH·IB/d  [I + B]
-            cs == setOf("I", "B") ->
-                fuseInto(b1, b2, "UH = RH·I·B/d", "Hall-Spannung", chars)
-
-            // Centripetal force from gravity: FG = FZP  [M + r]
-            cs == setOf("M", "r") ->
-                fuseInto(b1, b2, "F = G·M / r²", "Schwerkraft (vereinfacht)", chars)
-
-            // ── Physical objects ──────────────────────────────────────────
-            cs.containsAll(listOf("v", "t")) -> {
-                b1.isRod = true; b1.rodLength = 180f; b1.char = "t"
-                b1.renderedExpr = FormulaTypesetter.buildExpression("t", "Stab / Leiter")
-                bodies.remove(b2)
-            }
-
-            cs.containsAll(listOf("q", "t")) -> {
-                b1.char = "I"
-                b1.renderedExpr = FormulaTypesetter.buildExpression("I", "Stromstärke (I = q/t)")
-                b1.componentChars.clear(); b1.componentChars.add("I")
-                bodies.remove(b2)
-            }
-
-            else -> return false
-        }
+    fun tryFuseSymbols(first: SimBody, second: SimBody): Boolean {
+        if (first.id == second.id) return false
+        val componentSet = (first.componentChars + second.componentChars).toSet()
+        val plan = fusionPlan(componentSet) ?: return false
+        val components = mergeComponents(plan.components, componentSet)
+        fuseInto(first, second, plan, components)
         return true
     }
 
-    private fun fuseInto(b1: SimBody, b2: SimBody, formula: String, title: String, allChars: List<String>) {
-        val midX = (b1.x + b2.x) / 2f; val midY = (b1.y + b2.y) / 2f
-        b1.x = midX; b1.y = midY
-        b1.char = formula
-        b1.renderedExpr = FormulaTypesetter.buildExpression(formula, title)
-        b1.componentChars.clear(); b1.componentChars.addAll(allChars)
-        b1.mass = maxOf(b1.mass, b2.mass)
-        b1.hasGravity = b1.hasGravity || b2.hasGravity
-        b1.hasVelocity = b1.hasVelocity || b2.hasVelocity
-        bodies.remove(b2)
+    private fun catalogFusionPlan(chars: Set<String>): FusionPlan? =
+        SharedFormulaCatalog.exact(chars)?.let { rule ->
+            FusionPlan(rule.formula, rule.title, rule.orderedSymbols)
+        }
+
+    private fun fusionPlan(chars: Set<String>): FusionPlan? {
+        return when {
+            // More specific combinations must come before their subsets.
+            chars.containsAll(listOf("m", "v", "q", "B")) ->
+                FusionPlan("r = m·v / (q·B)", "Kreisbahnradius im B-Feld", listOf("m", "v", "q", "B"))
+
+            chars.containsAll(listOf("q", "v", "B")) ->
+                FusionPlan("FL = q·v·B", "Lorentzkraft", listOf("q", "v", "B"))
+
+            chars.containsAll(listOf("m", "v", "r")) ->
+                FusionPlan("F = m·v² / r", "Zentripetalkraft", listOf("m", "v", "r"))
+
+            chars.containsAll(listOf("G", "M", "c")) ->
+                FusionPlan("2GM / c²", "Schwarzschild-Radius", listOf("G", "M", "c"))
+
+            chars.containsAll(listOf("G", "M", "m")) ->
+                FusionPlan("F = G·M·m / r²", "Gravitationsgesetz", listOf("G", "M", "m"))
+
+            chars == setOf("m", "a") ->
+                catalogFusionPlan(chars)
+
+            chars == setOf("m", "v") ->
+                catalogFusionPlan(chars)
+
+            chars == setOf("v", "r") ->
+                catalogFusionPlan(chars)
+
+            chars == setOf("m", "½") || chars == setOf("m", "v", "½") ->
+                catalogFusionPlan(chars)
+
+            chars == setOf("m", "c") ->
+                catalogFusionPlan(chars)
+
+            chars == setOf("E", "B") ->
+                catalogFusionPlan(chars)
+
+            chars == setOf("m", "B") ->
+                catalogFusionPlan(chars)
+
+            chars == setOf("q", "E") ->
+                catalogFusionPlan(chars)
+
+            chars == setOf("q", "m") ->
+                catalogFusionPlan(chars)
+
+            chars == setOf("I", "B") ->
+                catalogFusionPlan(chars)
+
+            chars == setOf("M", "r") ->
+                catalogFusionPlan(chars)
+
+            chars.containsAll(listOf("v", "t")) ->
+                FusionPlan("t", "Stab / Leiter", listOf("v", "t"), createsRod = true)
+
+            chars.containsAll(listOf("q", "t")) ->
+                FusionPlan("I", "Stromstärke (I = q/t)", listOf("I"), createsCurrent = true)
+
+            else -> null
+        }
+    }
+
+    private fun mergeComponents(preferred: List<String>, componentSet: Set<String>): List<String> {
+        return (preferred + componentSet.filter { it !in preferred }).distinct()
+    }
+
+    private fun fuseInto(
+        first: SimBody,
+        second: SimBody,
+        plan: FusionPlan,
+        components: List<String>
+    ) {
+        val midpointX = (first.x + second.x) / 2f
+        val midpointY = (first.y + second.y) / 2f
+        val firstMass = first.mass.coerceAtLeast(0.001f)
+        val secondMass = second.mass.coerceAtLeast(0.001f)
+        val totalMass = firstMass + secondMass
+        val wasDragged = first.isBeingDragged || second.isBeingDragged
+        val firstHadThrust = first.hasThrust
+        val secondHadThrust = second.hasThrust
+
+        first.x = midpointX
+        first.y = midpointY
+        if (!wasDragged) {
+            first.vx = (first.vx * firstMass + second.vx * secondMass) / totalMass
+            first.vy = (first.vy * firstMass + second.vy * secondMass) / totalMass
+        } else {
+            first.vx = 0f
+            first.vy = 0f
+        }
+
+        first.char = plan.formula
+        first.renderedExpr = FormulaTypesetter.buildExpression(plan.formula, plan.title)
+        first.componentChars.clear()
+        first.componentChars.addAll(components)
+        first.mass = max(first.mass, second.mass)
+        first.hasGravity = first.hasGravity || second.hasGravity || components.contains("m")
+        first.hasVelocity = first.hasVelocity || second.hasVelocity || components.contains("v")
+        first.hasThrust = firstHadThrust || secondHadThrust || components.contains("a")
+        if (!firstHadThrust && secondHadThrust) first.thrustAngle = second.thrustAngle
+        first.hasFriction = first.hasFriction || second.hasFriction || components.contains("μ")
+        if (first.charge == 0f) first.charge = second.charge
+
+        first.isFieldSource = false
+        first.fieldType = FieldType.NONE
+        first.isBlackHole = plan.formula == "2GM / c²"
+        first.blackHoleRadius = if (first.isBlackHole) 55f else 0f
+        first.isRod = plan.createsRod
+        if (plan.createsRod) {
+            first.char = "t"
+            first.renderedExpr = FormulaTypesetter.buildExpression("t", plan.title)
+            first.rodLength = 180f
+            first.componentChars.clear()
+            first.componentChars.addAll(components)
+        } else if (plan.createsCurrent) {
+            first.char = "I"
+            first.renderedExpr = FormulaTypesetter.buildExpression("I", plan.title)
+            first.componentChars.clear()
+            first.componentChars.add("I")
+            first.isRod = false
+        }
+
+        first.isBeingDragged = false
+        first.collisionGraceFrames = 3
+        second.isBeingDragged = false
+        bodies.removeAll { it.id == second.id }
     }
 
     fun splitFormula(body: SimBody): List<SimBody> {
+        if (body.componentChars.size <= 1) return emptyList()
+        bodies.removeAll { it.id == body.id }
         val result = mutableListOf<SimBody>()
-        if (body.componentChars.size <= 1) return result
-        bodies.remove(body)
-        val n = body.componentChars.size
-        for (i in 0 until n) {
-            val ch = body.componentChars[i]
-            val offX = (i - (n - 1) / 2f) * 44f
-            val newBody = createLetterBody(ch, body.x + offX, body.y - 10f)
-            newBody.vx = (i - (n - 1) / 2f) * 120f
+        val count = body.componentChars.size
+        for (i in 0 until count) {
+            val component = body.componentChars[i]
+            val offsetX = (i - (count - 1) / 2f) * 44f
+            val newBody = createLetterBody(component, body.x + offsetX, body.y - 10f)
+            newBody.vx = (i - (count - 1) / 2f) * 120f
             newBody.vy = -140f
             bodies.add(newBody)
             result.add(newBody)
         }
         return result
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Lightweight undo/redo for fusion, splitting, deletion, and clearing.
+    // ──────────────────────────────────────────────────────────────────────────
+    fun saveUndoPoint() {
+        undoStack.addLast(snapshot())
+        while (undoStack.size > maxHistoryEntries) undoStack.removeFirst()
+        redoStack.clear()
+    }
+
+    fun undo(): Boolean {
+        if (undoStack.isEmpty()) return false
+        redoStack.addLast(snapshot())
+        restore(undoStack.removeLast())
+        return true
+    }
+
+    fun redo(): Boolean {
+        if (redoStack.isEmpty()) return false
+        undoStack.addLast(snapshot())
+        restore(redoStack.removeLast())
+        return true
+    }
+
+    fun clearUndoHistory() {
+        undoStack.clear()
+        redoStack.clear()
+    }
+
+    private fun snapshot(): SimulationSnapshot = SimulationSnapshot(
+        bodies = bodies.map { it.copy(componentChars = it.componentChars.toMutableList()) },
+        electronBeam = electronBeam.toList()
+    )
+
+    private fun restore(snapshot: SimulationSnapshot) {
+        bodies.clear()
+        bodies.addAll(snapshot.bodies.map {
+            it.copy(
+                componentChars = it.componentChars.toMutableList(),
+                isBeingDragged = false,
+                collisionGraceFrames = 2
+            )
+        })
+        electronBeam.clear()
+        electronBeam.addAll(snapshot.electronBeam)
     }
 }

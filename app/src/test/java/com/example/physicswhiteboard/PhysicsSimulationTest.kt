@@ -59,6 +59,30 @@ class PhysicsSimulationTest {
     }
 
     @Test
+    fun rotatedElectricFieldAcceleratesAlongItsVisibleArrowDirection() {
+        val engine = PhysicsSimulationEngine()
+        val eField = SimBody(
+            x = 300f,
+            y = 300f,
+            isFieldSource = true,
+            fieldType = FieldType.ELECTRIC_E,
+            fieldRadius = 200f,
+            fieldHalfWidth = 100f,
+            fieldAngle = (PI / 2).toFloat(),
+            fieldMagnitude = 2000f
+        )
+        val q = engine.createLetterBody("q", 300f, 300f)
+        engine.bodies.clear()
+        engine.bodies.add(eField)
+        engine.bodies.add(q)
+
+        engine.step(0.05f)
+
+        assertTrue("rotated E field should accelerate down the arrows", q.vy > 50f)
+        assertTrue("rotated E field should not accelerate sideways", abs(q.vx) < 10f)
+    }
+
+    @Test
     fun testMagneticLorentzForceDeflection() {
         val engine = PhysicsSimulationEngine()
         val bField = SimBody(
@@ -140,6 +164,82 @@ class PhysicsSimulationTest {
         assertEquals(2, engine.bodies.size)
         assertTrue(splitResults.any { it.char == "m" })
         assertTrue(splitResults.any { it.char == "a" })
+    }
+
+    @Test
+    fun paletteMassFallsAndFusedMassKeepsGravity() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        engine.canvasWidth = 1000f
+        engine.canvasHeight = 800f
+        engine.groundY = 760f
+
+        val m = engine.createLetterBody("m", 300f, 100f)
+        engine.bodies.add(m)
+        val initialY = m.y
+        engine.step(0.1f)
+        assertTrue("A palette-created mass should fall", m.y > initialY)
+        assertTrue(m.hasGravity)
+
+        val v = engine.createLetterBody("v", 350f, 100f)
+        engine.bodies.add(v)
+        assertTrue(engine.tryFuseSymbols(m, v))
+        assertTrue("Gravity must survive m + v", m.hasGravity)
+        assertEquals("p = m·v", m.renderedExpr?.formulaText)
+    }
+
+    @Test
+    fun fusedNewtonFormulaIsCenteredAndComplete() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        val m = engine.createLetterBody("m", 100f, 100f)
+        val a = engine.createLetterBody("a", 140f, 100f)
+        engine.bodies.add(m)
+        engine.bodies.add(a)
+
+        assertTrue(engine.tryFuseSymbols(m, a))
+        assertEquals(1, engine.bodies.size)
+        assertEquals(120f, m.x, 0.001f)
+        assertEquals("F = m·a", m.renderedExpr?.formulaText)
+        assertTrue(m.renderedExpr!!.glyphs.any { it.text == "F" })
+        assertTrue(m.renderedExpr!!.glyphs.any { it.text == "a" })
+    }
+
+    @Test
+    fun draggedBodyIsNotMovedByPhysicsUntilReleased() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        val m = engine.createLetterBody("m", 300f, 300f)
+        val a = engine.createLetterBody("a", 300f, 300f)
+        engine.bodies.add(m)
+        engine.bodies.add(a)
+
+        engine.beginDrag(m)
+        engine.step(0.1f)
+        assertEquals(300f, m.x, 0.001f)
+        assertEquals(300f, m.y, 0.001f)
+        engine.endDrag(m)
+        engine.step(0.1f)
+        assertTrue(m.y > 300f)
+    }
+
+    @Test
+    fun undoAndRedoRestoreFormulaEdits() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        val m = engine.createLetterBody("m", 100f, 100f)
+        val v = engine.createLetterBody("v", 160f, 100f)
+        engine.bodies.add(m)
+        engine.bodies.add(v)
+
+        engine.saveUndoPoint()
+        assertTrue(engine.tryFuseSymbols(m, v))
+        assertEquals(1, engine.bodies.size)
+        assertTrue(engine.undo())
+        assertEquals(2, engine.bodies.size)
+        assertTrue(engine.redo())
+        assertEquals(1, engine.bodies.size)
+        assertEquals("p = m·v", engine.bodies.single().char)
     }
 
     @Test
