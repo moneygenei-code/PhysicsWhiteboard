@@ -154,11 +154,13 @@ class PhysicsSimulationEngine {
                 val centerX = canvasWidth * 0.5f
                 val centerY = canvasHeight * 0.45f
 
+                // E points screen-up so qE cancels the (now correctly signed)
+                // downward Lorentz force on the matched q+ particle (B ⊙).
                 val eField = createElectricFieldSource(
                     x = centerX,
                     y = centerY,
                     radius = 150f,
-                    angle = (PI / 2).toFloat(),
+                    angle = (-PI / 2).toFloat(),
                     magnitude = 5880f,
                     label = "E",
                     title = "Elektrisches Feld"
@@ -197,18 +199,22 @@ class PhysicsSimulationEngine {
                 val centerX = canvasWidth * 0.5f
                 val centerY = canvasHeight * 0.48f
 
+                // Sized from r = m·v/(|q|·B/100): at Is = 0.6 A (B = 120) and
+                // UB = 300 V (v = 380) the orbit is r ≈ 158px inside the
+                // 240px Helmholtz field. Weak Is lets the beam escape, strong
+                // Is winds it tight — the actual experiment.
                 val bField = SimBody(
                     x = centerX, y = centerY,
                     isFieldSource = true, fieldType = FieldType.MAGNETIC_B,
                     fieldRadius = 240f, bDirectionZ = 1,
-                    fieldMagnitude = expCurrentIs * 2000f,
+                    fieldMagnitude = expCurrentIs * 200f,
                     char = "B",
                     componentChars = mutableListOf("B"),
                     renderedExpr = FormulaTypesetter.buildExpression("B", "Helmholtz-Feld")
                 )
                 bodies.add(bField)
 
-                val electron = createLetterBody("e", centerX - 120f, centerY)
+                val electron = createLetterBody("e", centerX + 120f, centerY)
                 electron.charge = -1f
                 electron.vy = -sqrt(expVoltageUb / 300f) * 380f
                 electron.hasVelocity = true
@@ -233,12 +239,15 @@ class PhysicsSimulationEngine {
 
                 val analyzerX = startX + 220f
                 val analyzerY = startY + 60f
+                // Orbit radii r = m·v/(q·B/100) are 300px (²⁰Ne) vs 330px
+                // (²²Ne): both bend visibly through the analyzer and separate
+                // by ~50px at the exit.
                 bodies.add(
                     SimBody(
                         x = analyzerX, y = analyzerY,
                         isFieldSource = true, fieldType = FieldType.MAGNETIC_B,
                         fieldRadius = 220f, bDirectionZ = 1,
-                        fieldMagnitude = 1200f,
+                        fieldMagnitude = 2400f,
                         char = "B",
                         componentChars = mutableListOf("B"),
                         renderedExpr = FormulaTypesetter.buildExpression("B", "Analysator-Feld")
@@ -251,7 +260,9 @@ class PhysicsSimulationEngine {
                 ionNe20.vx = 360f
                 bodies.add(ionNe20)
 
-                val ionNe22 = createLetterBody("²²Ne", startX - 160f, startY - 15f)
+                // Injected behind ²⁰Ne on the same line (pulsed source): both
+                // isotopes sample the same path without starting overlapped.
+                val ionNe22 = createLetterBody("²²Ne", startX - 330f, startY)
                 ionNe22.charge = 1f
                 ionNe22.mass = 22f
                 ionNe22.vx = 360f
@@ -261,13 +272,15 @@ class PhysicsSimulationEngine {
             ApparatusScene.DEFLECTION_CAPACITOR -> {
                 val centerX = canvasWidth * 0.45f
                 val centerY = canvasHeight * 0.45f
+                // a = E·q/m = -800px/s² draws the textbook parabola: the beam
+                // crosses the whole plate region and exits the right side.
                 bodies.add(
                     createElectricFieldSource(
                         x = centerX,
                         y = centerY,
                         radius = 180f,
                         angle = (PI / 2).toFloat(),
-                        magnitude = 1600f,
+                        magnitude = 400f,
                         label = "E",
                         title = "Ablenkfeld"
                     )
@@ -292,22 +305,26 @@ class PhysicsSimulationEngine {
                     )
                 )
 
+                // Gentle B (ω = 0.5/s) so carriers cross the whole 260px plank
+                // while visibly deflecting sideways — the Hall drift.
                 bodies.add(
                     SimBody(
                         x = centerX, y = centerY,
                         isFieldSource = true, fieldType = FieldType.MAGNETIC_B,
                         fieldRadius = 160f, bDirectionZ = -1,
-                        fieldMagnitude = 1800f,
+                        fieldMagnitude = 25f,
                         char = "B",
                         componentChars = mutableListOf("B"),
                         renderedExpr = FormulaTypesetter.buildExpression("B", "Magnetfeld ⊗")
                     )
                 )
 
-                for (i in 0..5) {
-                    val electron = createLetterBody("e", centerX - 120f + (i * 40f), centerY)
+                // Spaced wider than two collision radii so the carriers do not
+                // blast each other off the plank on the first frame.
+                for (i in 0..2) {
+                    val electron = createLetterBody("e", centerX - 120f + (i * 120f), centerY)
                     electron.charge = -1f
-                    electron.vx = 85f
+                    electron.vx = 120f
                     bodies.add(electron)
                 }
             }
@@ -519,7 +536,13 @@ class PhysicsSimulationEngine {
                         val omega = (bf.fieldMagnitude / 100f) *
                                 body.charge * bf.bDirectionZ.toFloat() /
                                         body.mass.coerceAtLeast(0.001f)
-                        val deltaAngle = -omega * safeDt
+                        // Exact 2D rotation of v. The positive sign is the
+                        // right-hand rule in screen coordinates (x right,
+                        // y down): q+ moving +x with B out-of-page (+z) turns
+                        // toward screen +y (down on the page), q(v × B).
+                        // A y-flip turns physics-CCW into screen-CW, which is
+                        // why the same matrix needs +omega here and not -omega.
+                        val deltaAngle = omega * safeDt
                         val c = cos(deltaAngle)
                         val s = sin(deltaAngle)
                         val nextVx = c * body.vx - s * body.vy
@@ -573,13 +596,16 @@ class PhysicsSimulationEngine {
     }
 
     private fun handleCollisions() {
+        // Rods are static guides (conductor planks): they neither move nor
+        // shove, so carriers can drift along the Hall plank and user-built
+        // rods stay where they are put.
         for (i in bodies.indices) {
             val first = bodies[i]
-            if (first.isFieldSource || first.isBeingDragged || first.collisionGraceFrames > 0) continue
+            if (first.isFieldSource || first.isRod || first.isBeingDragged || first.collisionGraceFrames > 0) continue
 
             for (j in i + 1 until bodies.size) {
                 val second = bodies[j]
-                if (second.isFieldSource || second.isBeingDragged || second.collisionGraceFrames > 0) continue
+                if (second.isFieldSource || second.isRod || second.isBeingDragged || second.collisionGraceFrames > 0) continue
 
                 val dx = second.x - first.x
                 val dy = second.y - first.y
@@ -670,7 +696,8 @@ class PhysicsSimulationEngine {
         setOf("q", "v", "B"),
         setOf("m", "v", "q", "B"),
         setOf("G", "M", "c"),
-        setOf("G", "M", "m")
+        setOf("G", "M", "m"),
+        setOf("G", "M", "m", "r")
     )
 
     private val canonicalSymbolOrder = listOf(

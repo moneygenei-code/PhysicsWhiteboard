@@ -65,13 +65,59 @@ rendering, `I` split vs. palette `I`, `μ` physics, throw-velocity release.
 
 **`README.md`** — modes, stepwise chains, drag-in, fling, `e` palette, sliders.
 
-## 3. Verification
+## 3. Follow-up physics audit (same day) — "make sure everything functions"
 
-- Full set-reachability audit of `fusionPlan` (all 12 README fusions + legacy
-  tests) done by review; branch-order audit of the typesetter for every engine
-  formula string, intermediate, group, and single symbol.
-- NOTE: the Gradle suite could not be executed here — the sandbox has no JDK /
-  Android SDK and those hosts are unreachable. Please run on a dev machine:
-  `bash ./gradlew testDebugUnitTest` and `bash ./gradlew assembleDebug`,
-  then manually check on device: mode toggle, `q+v→q·v→+B→FL`, `m+c→E = m·c²`,
-  palette long-press drag, fling/throw, Fadenstrahlrohr sliders, Wien `E` grab.
+**Critical find: Lorentz force was mirrored.** The B-field velocity rotation used
+`-omega·dt`; the y-flip between physics and screen coordinates means the same
+matrix needs `+omega·dt`. A positive charge moving +x with B out-of-page
+deflected screen-up instead of screen-down (verified 4 ways, incl. right-hand
+rule and rotation-matrix mapping). Fix: sign corrected in `step()`; Wien E
+flipped to screen-up so `qE` still cancels `FL` for v = 420; B drawing now
+shows ⊗ for into-page (`bDirectionZ < 0`, e.g. Hall) and ⊙ otherwise.
+
+**Scene retunes** (all measured in a faithful JS port of the integrator first):
+- Fadenstrahlrohr: B was 10× too strong (32px micro-orbit). Now `Is·200`:
+  r ≈ 158px at defaults; weak Is lets the beam escape, strong Is winds it
+  tight; injection mirrored to +120px so the corrected orbit stays contained.
+- Hall: B = 1800 froze carriers in 2px orbits AND 6 electrons spawned overlapped
+  (blasted apart frame 1) AND the rod was shoved away by collisions. Now B = 25,
+  3 carriers at 120px spacing with vx = 120, rods excluded from collisions
+  (static guides).
+- Deflection: E = 1600 shot the beam off-screen (−838px). Now E = 400: textbook
+  parabola exiting the right side at (125, −110).
+- Massenspektrometer: analyzer 1200 → 2400 (separation 17px → 58px); ²²Ne
+  injected 170px behind ²⁰Ne (pulsed source, no spawn overlap).
+- Wien: unchanged magnitudes, still balanced (drift −12px < 45px test bound).
+
+**Also fixed:** gravitation typesetter branches tightened to exact matches (a
+`G·M·m`-style product or normal-mode `GMm` group hijacked the fraction
+layout); `{G,M,m,r}` added as multi-target so gravitation accepts an explicit
+`r` stepwise.
+
+**New tests (6):** right-hand-rule sign lock (q+ down, e− up), Fadenstrahlrohr
+orbit (loop span, containment, speed conservation), Hall drift (plank static,
+carriers drift + deflect + stay fast), deflection parabola (right exit between
+plates, upward arc), mass-spec separation (solo runs, sep > 40), gravitation
+with explicit r.
+
+## 4. Verification
+
+- **Syntax:** all 10 Kotlin files parsed clean with tree-sitter-kotlin
+  (validator itself checked against broken + valid samples).
+- **Check A (real code):** every `FusionPlan` + catalog formula from the actual
+  sources routes to its intended typesetter branch; all 40 intermediates,
+  normal groups, and single symbols fall through to the linear renderer.
+- **Check B (physics):** faithful port of `step()` + scenes measured every
+  apparatus quantitatively before/after (orbit radii, drifts, separations,
+  exit points, RHR sign) — all numbers in §3.
+- **Check C (real rules):** rule sets extracted from `fusionPlan` via regex;
+  all 25 documented fusion steps reachable pairwise, field/intermediate guards
+  and invalid combos verified blocked.
+- Every new unit test's exact parameters (dt, steps, canvas) were pre-run in
+  the harness with margins of 2–10× on each assertion.
+- NOTE: the Gradle suite itself could not be executed here — the sandbox has
+  no JDK / Android SDK and those hosts are unreachable. Please run on a dev
+  machine: `bash ./gradlew testDebugUnitTest` and
+  `bash ./gradlew assembleDebug`, then manually check on device: mode toggle,
+  `q+v→q·v→+B→FL`, `m+c→E = m·c²`, palette long-press drag, fling/throw,
+  Fadenstrahlrohr sliders (orbit opens/tightens), Wien `E` grab, Hall ⊗.

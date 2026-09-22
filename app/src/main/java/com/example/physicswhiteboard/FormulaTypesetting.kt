@@ -86,7 +86,9 @@ object FormulaTypesetter {
             }
 
             // ── Gravitation F = G·M·m / r² ────────────────────────────────
-            formula.contains("GMm") || (formula.contains("G·M") && formula.contains("m")) -> {
+            // Kept exact: looser matches would hijack G·M·m-style products
+            // and normal-mode "GMm" groups into this fraction layout.
+            formula.contains("G·M·m / r²") -> {
                 val bs = 30f; val ss = 18f; val ny = -18f; val dy = 22f
                 gl += g("F", -78f, 0f, bs); gl += g("=", -56f, 0f, 24f)
                 gl += g("G", -30f, ny, bs); gl += g("M", -4f, ny, bs); gl += g("m", 24f, ny, bs)
@@ -96,7 +98,7 @@ object FormulaTypesetter {
             }
 
             // ── F = G·M / r² (simplified gravity) ─────────────────────────
-            formula.contains("G·M / r²") || (formula.contains("G·M") && formula.contains("r²")) -> {
+            formula.contains("G·M / r²") -> {
                 val bs = 30f; val ss = 18f; val ny = -18f; val dy = 22f
                 gl += g("F", -60f, 0f, bs); gl += g("=", -38f, 0f, 24f)
                 gl += g("G", -12f, ny, bs); gl += g("M", 14f, ny, bs)

@@ -731,10 +731,11 @@ fun PhysicsSandboxApp() {
                         onValueChange = {
                             isSlider = it
                             simEngine.expCurrentIs = it
-                            // Adjust B-field
+                            // Adjust B-field (r = m·v/(|q|·B/100) sizing: 0.6 A
+                            // gives the r ≈ 158px orbit inside the 240px field)
                             simEngine.bodies
                                 .filter { it.fieldType == FieldType.MAGNETIC_B }
-                                .forEach { b -> b.fieldMagnitude = it * 2000f }
+                                .forEach { b -> b.fieldMagnitude = it * 200f }
                         },
                         valueRange = 0.2f..1.2f,
                         colors = SliderDefaults.colors(thumbColor = InkColor, activeTrackColor = InkColor)
@@ -859,7 +860,8 @@ fun DrawScope.drawElectricFieldBox(ef: SimBody) {
     }
 }
 
-// Draw the Magnetic Field Circle with field dots (⊙)
+// Draw the Magnetic Field Circle: dots (⊙) for out-of-page, crosses (⊗)
+// for into-page, following bDirectionZ.
 fun DrawScope.drawMagneticFieldCircle(bf: SimBody) {
     val r = bf.fieldRadius
     val cx = bf.x
@@ -873,18 +875,34 @@ fun DrawScope.drawMagneticFieldCircle(bf: SimBody) {
         style = Stroke(width = 1.4f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f))
     )
 
-    // Field dots grid inside circle
+    // Field marker grid inside circle
     val step = 28f
+    val crossHalf = 3.5f
     var gx = -r + 14f
     while (gx <= r - 14f) {
         var gy = -r + 14f
         while (gy <= r - 14f) {
             if (gx * gx + gy * gy <= (r - 12f) * (r - 12f)) {
-                drawCircle(
-                    color = InkColor.copy(alpha = 0.20f),
-                    radius = 2.0f,
-                    center = Offset(cx + gx, cy + gy)
-                )
+                if (bf.bDirectionZ < 0) {
+                    drawLine(
+                        color = InkColor.copy(alpha = 0.20f),
+                        start = Offset(cx + gx - crossHalf, cy + gy - crossHalf),
+                        end = Offset(cx + gx + crossHalf, cy + gy + crossHalf),
+                        strokeWidth = 1.6f
+                    )
+                    drawLine(
+                        color = InkColor.copy(alpha = 0.20f),
+                        start = Offset(cx + gx - crossHalf, cy + gy + crossHalf),
+                        end = Offset(cx + gx + crossHalf, cy + gy - crossHalf),
+                        strokeWidth = 1.6f
+                    )
+                } else {
+                    drawCircle(
+                        color = InkColor.copy(alpha = 0.20f),
+                        radius = 2.0f,
+                        center = Offset(cx + gx, cy + gy)
+                    )
+                }
             }
             gy += step
         }
