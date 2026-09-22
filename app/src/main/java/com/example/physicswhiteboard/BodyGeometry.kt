@@ -66,18 +66,19 @@ object BodyGeometry {
     fun isWithinFusionDistance(first: SimBody, second: SimBody): Boolean =
         hypot(first.x - second.x, first.y - second.y) <= fusionDistance(first, second)
 
-    /** Minimum center distance used by the magnetic fusion preview. */
-    fun fusionPreviewDistance(first: SimBody, second: SimBody): Float {
-        val visualRadius = max(
-            max(firstRenderedHalfSize(first), 18f),
-            max(firstRenderedHalfSize(second), 18f)
-        )
-        return visualRadius.coerceIn(30f, 48f)
+    fun maxHalfExtent(body: SimBody): Float {
+        val extents = visualHalfExtents(body)
+        return max(extents.halfWidth, extents.halfHeight)
     }
 
-    private fun firstRenderedHalfSize(body: SimBody): Float {
-        val extents = visualHalfExtents(body)
-        return max(extents.halfWidth, extents.halfHeight) * 0.58f
+    /**
+     * Minimum center distance used by the magnetic fusion preview. It grows
+     * with big formulas but always stays inside the fusion range, so the snap
+     * can never push a pair out of a valid fusion.
+     */
+    fun fusionPreviewDistance(first: SimBody, second: SimBody): Float {
+        val want = (maxHalfExtent(first) + maxHalfExtent(second)) * 0.8f
+        return min(want.coerceIn(30f, 110f), fusionDistance(first, second) * 0.8f)
     }
 
     fun containsPoint(body: SimBody, x: Float, y: Float): Boolean {

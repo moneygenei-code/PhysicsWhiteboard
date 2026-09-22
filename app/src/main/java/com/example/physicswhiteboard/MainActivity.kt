@@ -14,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -89,8 +90,19 @@ val DOCK_CHARS = listOf(
     listOf("m", "M", "g", "a"),
     listOf("v", "r", "½", "μ"),
     listOf("c", "G", "t", "B"),
-    listOf("E", "q", "I", "")
+    listOf("E", "q", "I", "e")
 )
+
+/**
+ * Small bodies win over big field regions, so e.g. the Wien E-field can
+ * still be grabbed from under the B-field circle. Stable for equal sizes,
+ * so the most recently added body stays on top.
+ */
+private fun findBodyAt(bodies: List<SimBody>, x: Float, y: Float): SimBody? {
+    return bodies.asReversed()
+        .sortedBy { BodyGeometry.collisionRadius(it) }
+        .firstOrNull { BodyGeometry.containsPoint(it, x, y) }
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -122,6 +134,16 @@ fun PhysicsSandboxApp() {
     var rotateTargetBodyId by remember { mutableStateOf<String?>(null) }
     var fusionTargetId by remember { mutableStateOf<String?>(null) }
     var paused by remember { mutableStateOf(simEngine.isPaused) }
+    var fusionMode by remember { mutableStateOf(simEngine.fusionMode) }
+
+    // Drag session shared by the canvas and palette drag-in gestures.
+    val dragSamples = remember { mutableListOf<Pair<Long, Offset>>() }
+    var paletteDragActive by remember { mutableStateOf(false) }
+    var paletteDragDistance by remember { mutableFloatStateOf(0f) }
+
+    // Apparatus sliders need Compose state; the engine only stores values.
+    var ubSlider by remember { mutableFloatStateOf(simEngine.expVoltageUb) }
+    var isSlider by remember { mutableFloatStateOf(simEngine.expCurrentIs) }
 
     var frameTrigger by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
 
@@ -132,6 +154,107 @@ fun PhysicsSandboxApp() {
             isAntiAlias = true
             textAlign = android.graphics.Paint.Align.CENTER
         }
+    }
+
+    fun recordDragSample() {
+        val now = System.nanoTime()
+        dragSamples.add(now to pointerPos)
+        val cutoff = now - 120_000_000L
+        while (dragSamples.size > 2 && dragSamples.first().first < cutoff) {
+            dragSamples.removeAt(0)
+        }
+    }
+
+    // Throw/fling: release velocity from the last ~120ms of pointer movement.
+    fun consumeReleaseVelocity(): Offset {
+        if (dragSamples.size < 2) return Offset.Zero
+        val first = dragSamples.first()
+        val last = dragSamples.last()
+        val dtSeconds = (last.first - first.first) / 1_000_000_000f
+        if (dtSeconds < 0.016f) return Offset.Zero
+        val vx = (last.second.x - first.second.x) / dtSeconds
+        val vy = (last.second.y - first.second.y) / dtSeconds
+        return Offset(vx.coerceIn(-2600f, 2600f), vy.coerceIn(-2600f, 2600f))
+    }
+
+    fun moveActiveDraggedBody() {
+        val draggedBody = simEngine.bodies.firstOrNull { it.id == draggedBodyId } ?: return
+        simEngine.moveDraggedBody(
+            draggedBody,
+            pointerPos.x - dragGrabOffset.x,
+            pointerPos.y - dragGrabOffset.y
+        )
+        recordDragSample()
+        val target = simEngine.findFusionTarget(draggedBody)
+        // Normal mode fuses on deep overlap; steering the symbol away would
+        // push it out of the tight fusion range again.
+        if (target != null && simEngine.fusionMode == FusionMode.PHYSIK) {
+            simEngine.snapDraggedBodyOutsideTarget(draggedBody, target)
+        }
+        fusionTargetId = target?.id
+    }
+
+    fun finishActiveDrag() {
+        val draggedBody = simEngine.bodies.firstOrNull { it.id == draggedBodyId }
+        if (draggedBody != null) {
+            if (paletteDragActive && paletteDragDistance < 12f) {
+                // Long-press without movement: the tap already spawned the symbol.
+                simEngine.bodies.removeAll { it.id == draggedBody.id }
+                simEngine.cancelDrag(draggedBody)
+            } else if (draggedBody.x > widthPx - 100f && draggedBody.y > heightPx - 100f) {
+                simEngine.bodies.removeAll { it.id == draggedBody.id }
+                simEngine.cancelDrag(draggedBody)
+            } else {
+                val target = fusionTargetId
+                    ?.let { targetId -> simEngine.bodies.firstOrNull { it.id == targetId } }
+                    ?: simEngine.findFusionTarget(draggedBody)
+                if (target != null) {
+                    if (!simEngine.tryFuseSymbols(draggedBody, target)) {
+                        simEngine.endDrag(draggedBody)
+                    }
+                } else {
+                    val release = consumeReleaseVelocity()
+                    simEngine.endDrag(draggedBody, release.x, release.y)
+                }
+            }
+        }
+
+        simEngine.bodies.firstOrNull { it.id == rotateTargetBodyId }?.let { simEngine.endDrag(it) }
+        draggedBodyId = null
+        rotateTargetBodyId = null
+        fusionTargetId = null
+        paletteDragActive = false
+        dragSamples.clear()
+    }
+
+    fun cancelActiveDrag() {
+        simEngine.bodies.firstOrNull { it.id == draggedBodyId }?.let { simEngine.cancelDrag(it) }
+        simEngine.bodies.firstOrNull { it.id == rotateTargetBodyId }?.let { simEngine.cancelDrag(it) }
+        draggedBodyId = null
+        rotateTargetBodyId = null
+        fusionTargetId = null
+        paletteDragActive = false
+        dragSamples.clear()
+    }
+
+    fun beginPaletteDrag(char: String, canvasPos: Offset) {
+        if (draggedBodyId != null || rotateTargetBodyId != null) return
+        simEngine.saveUndoPoint()
+        val body = simEngine.createLetterBody(
+            char,
+            canvasPos.x.coerceIn(0f, widthPx),
+            canvasPos.y.coerceIn(0f, heightPx)
+        )
+        simEngine.bodies.add(body)
+        draggedBodyId = body.id
+        dragGrabOffset = Offset.Zero
+        pointerPos = Offset(body.x, body.y)
+        fusionTargetId = null
+        paletteDragActive = true
+        paletteDragDistance = 0f
+        dragSamples.clear()
+        recordDragSample()
+        simEngine.beginDrag(body)
     }
 
     // Real-time 60/120 FPS physics ticker
@@ -168,10 +291,8 @@ fun PhysicsSandboxApp() {
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = { tapOffset ->
-                            val hit = simEngine.bodies.asReversed().firstOrNull { body ->
-                                BodyGeometry.containsPoint(body, tapOffset.x, tapOffset.y)
-                            }
-                            if (hit != null && hit.componentChars.size > 1) {
+                            val hit = findBodyAt(simEngine.bodies, tapOffset.x, tapOffset.y)
+                            if (hit != null && (hit.componentChars.size > 1 || hit.isFusedCurrent)) {
                                 simEngine.saveUndoPoint()
                                 simEngine.splitFormula(hit)
                             }
@@ -193,9 +314,7 @@ fun PhysicsSandboxApp() {
                                 return@detectDragGestures
                             }
 
-                            val bodyHit = simEngine.bodies.asReversed().firstOrNull { body ->
-                                BodyGeometry.containsPoint(body, startOffset.x, startOffset.y)
-                            }
+                            val bodyHit = findBodyAt(simEngine.bodies, startOffset.x, startOffset.y)
                             if (bodyHit != null) {
                                 draggedBodyId = bodyHit.id
                                 dragGrabOffset = Offset(
@@ -203,6 +322,10 @@ fun PhysicsSandboxApp() {
                                     startOffset.y - bodyHit.y
                                 )
                                 fusionTargetId = null
+                                paletteDragActive = false
+                                paletteDragDistance = 0f
+                                dragSamples.clear()
+                                recordDragSample()
                                 simEngine.saveUndoPoint()
                                 simEngine.beginDrag(bodyHit)
                             }
@@ -227,49 +350,13 @@ fun PhysicsSandboxApp() {
                                 return@detectDragGestures
                             }
 
-                            val draggedBody = simEngine.bodies.firstOrNull { it.id == draggedBodyId }
-                            if (draggedBody != null) {
-                                val newX = pointerPos.x - dragGrabOffset.x
-                                val newY = pointerPos.y - dragGrabOffset.y
-                                simEngine.moveDraggedBody(draggedBody, newX, newY)
-                                val target = simEngine.findFusionTarget(draggedBody)
-                                if (target != null) {
-                                    simEngine.snapDraggedBodyOutsideTarget(draggedBody, target)
-                                }
-                                fusionTargetId = target?.id
-                            }
+                            moveActiveDraggedBody()
                         },
                         onDragEnd = {
-                            val draggedBody = simEngine.bodies.firstOrNull { it.id == draggedBodyId }
-                            if (draggedBody != null) {
-                                if (draggedBody.x > widthPx - 100f && draggedBody.y > heightPx - 100f) {
-                                    simEngine.bodies.removeAll { it.id == draggedBody.id }
-                                    simEngine.cancelDrag(draggedBody)
-                                } else {
-                                    val target = fusionTargetId
-                                        ?.let { targetId -> simEngine.bodies.firstOrNull { it.id == targetId } }
-                                        ?: simEngine.findFusionTarget(draggedBody)
-                                    if (target != null) {
-                                        if (!simEngine.tryFuseSymbols(draggedBody, target)) {
-                                            simEngine.endDrag(draggedBody)
-                                        }
-                                    } else {
-                                        simEngine.endDrag(draggedBody)
-                                    }
-                                }
-                            }
-
-                            simEngine.bodies.firstOrNull { it.id == rotateTargetBodyId }?.let { simEngine.endDrag(it) }
-                            draggedBodyId = null
-                            rotateTargetBodyId = null
-                            fusionTargetId = null
+                            finishActiveDrag()
                         },
                         onDragCancel = {
-                            simEngine.bodies.firstOrNull { it.id == draggedBodyId }?.let { simEngine.cancelDrag(it) }
-                            simEngine.bodies.firstOrNull { it.id == rotateTargetBodyId }?.let { simEngine.cancelDrag(it) }
-                            draggedBodyId = null
-                            rotateTargetBodyId = null
-                            fusionTargetId = null
+                            cancelActiveDrag()
                         }
                     )
                 }
@@ -396,7 +483,11 @@ fun PhysicsSandboxApp() {
                     color = InkColor
                 )
                 Text(
-                    text = activeScene.chapterRef,
+                    text = if (fusionMode == FusionMode.NORMAL) {
+                        "${activeScene.chapterRef} · Normal: m+v → mv"
+                    } else {
+                        activeScene.chapterRef
+                    },
                     fontFamily = FontFamily.Serif,
                     fontSize = 12.sp,
                     color = InkSecondary
@@ -431,6 +522,17 @@ fun PhysicsSandboxApp() {
                 }) {
                     Text(
                         text = "Reset",
+                        fontFamily = FontFamily.Serif,
+                        fontSize = 12.sp,
+                        color = InkColor
+                    )
+                }
+                TextButton(onClick = {
+                    fusionMode = if (fusionMode == FusionMode.PHYSIK) FusionMode.NORMAL else FusionMode.PHYSIK
+                    simEngine.fusionMode = fusionMode
+                }) {
+                    Text(
+                        text = if (fusionMode == FusionMode.PHYSIK) "∑ Physik" else "abc Normal",
                         fontFamily = FontFamily.Serif,
                         fontSize = 12.sp,
                         color = InkColor
@@ -508,31 +610,27 @@ fun PhysicsSandboxApp() {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         for (ch in row) {
                             if (ch.isNotEmpty()) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(44.dp)
-                                        .background(WireframeTileBg, RoundedCornerShape(10.dp))
-                                        .clickable {
-                                            simEngine.saveUndoPoint()
-                                            // Spawn directly near center of canvas
-                                            val newBody = simEngine.createLetterBody(
-                                                ch,
-                                                widthPx * 0.45f + kotlin.random.Random.nextInt(-50, 50),
-                                                heightPx * 0.45f + kotlin.random.Random.nextInt(-50, 50)
-                                            )
-                                            simEngine.bodies.add(newBody)
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = ch,
-                                        fontFamily = FontFamily.Serif,
-                                        fontStyle = FontStyle.Italic,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 24.sp,
-                                        color = InkColor
-                                    )
-                                }
+                                PaletteTile(
+                                    ch = ch,
+                                    onTapSpawn = {
+                                        simEngine.saveUndoPoint()
+                                        // Spawn directly near center of canvas
+                                        val newBody = simEngine.createLetterBody(
+                                            ch,
+                                            widthPx * 0.45f + kotlin.random.Random.nextInt(-50, 50),
+                                            heightPx * 0.45f + kotlin.random.Random.nextInt(-50, 50)
+                                        )
+                                        simEngine.bodies.add(newBody)
+                                    },
+                                    onDragStart = { canvasPos -> beginPaletteDrag(ch, canvasPos) },
+                                    onDrag = { dragAmount ->
+                                        pointerPos += dragAmount
+                                        paletteDragDistance += dragAmount.getDistance()
+                                        moveActiveDraggedBody()
+                                    },
+                                    onDragEnd = { finishActiveDrag() },
+                                    onDragCancel = { cancelActiveDrag() }
+                                )
                             } else {
                                 Spacer(modifier = Modifier.size(44.dp))
                             }
@@ -603,40 +701,41 @@ fun PhysicsSandboxApp() {
                     Spacer(modifier = Modifier.height(6.dp))
 
                     Text(
-                        text = "Spannung UB = ${simEngine.expVoltageUb.toInt()} V",
+                        text = "Spannung UB = ${ubSlider.toInt()} V",
                         fontFamily = FontFamily.Serif,
                         fontSize = 11.sp,
                         color = InkSecondary
                     )
                     Slider(
-                        value = simEngine.expVoltageUb,
+                        value = ubSlider,
                         onValueChange = {
+                            ubSlider = it
                             simEngine.expVoltageUb = it
                             // Adjust emitted electron speed
-                            val e = simEngine.bodies.firstOrNull { b -> b.char == "e" }
-                            if (e != null) {
-                                e.vy = -sqrt(it / 300f) * 380f
-                            }
+                            simEngine.bodies
+                                .filter { b -> b.char == "e" }
+                                .forEach { e -> e.vy = -sqrt(it / 300f) * 380f }
                         },
                         valueRange = 100f..500f,
                         colors = SliderDefaults.colors(thumbColor = InkColor, activeTrackColor = InkColor)
                     )
 
                     Text(
-                        text = "Spulenstrom IS = ${(simEngine.expCurrentIs * 100).toInt() / 100f} A",
+                        text = "Spulenstrom IS = ${(isSlider * 100).toInt() / 100f} A",
                         fontFamily = FontFamily.Serif,
                         fontSize = 11.sp,
                         color = InkSecondary
                     )
                     Slider(
-                        value = simEngine.expCurrentIs,
+                        value = isSlider,
                         onValueChange = {
+                            isSlider = it
                             simEngine.expCurrentIs = it
-                            // Adjust B-field
-                            val b = simEngine.bodies.firstOrNull { it.fieldType == FieldType.MAGNETIC_B }
-                            if (b != null) {
-                                b.fieldMagnitude = it * 2000f
-                            }
+                            // Adjust B-field (r = m·v/(|q|·B/100) sizing: 0.6 A
+                            // gives the r ≈ 158px orbit inside the 240px field)
+                            simEngine.bodies
+                                .filter { it.fieldType == FieldType.MAGNETIC_B }
+                                .forEach { b -> b.fieldMagnitude = it * 200f }
                         },
                         valueRange = 0.2f..1.2f,
                         colors = SliderDefaults.colors(thumbColor = InkColor, activeTrackColor = InkColor)
@@ -662,6 +761,48 @@ fun PhysicsSandboxApp() {
                 }
             )
         }
+    }
+}
+
+// A palette tile spawns on tap and can also be dragged onto the board with
+// a long-press. The root coordinates match the full-size canvas coordinates.
+@Composable
+fun PaletteTile(
+    ch: String,
+    onTapSpawn: () -> Unit,
+    onDragStart: (Offset) -> Unit,
+    onDrag: (Offset) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit
+) {
+    var tileOrigin by remember { mutableStateOf(Offset.Zero) }
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .background(WireframeTileBg, RoundedCornerShape(10.dp))
+            .onGloballyPositioned { tileOrigin = it.positionInRoot() }
+            .clickable { onTapSpawn() }
+            .pointerInput(ch) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { offset -> onDragStart(tileOrigin + offset) },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        onDrag(dragAmount)
+                    },
+                    onDragEnd = onDragEnd,
+                    onDragCancel = onDragCancel
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = ch,
+            fontFamily = FontFamily.Serif,
+            fontStyle = FontStyle.Italic,
+            fontWeight = FontWeight.Bold,
+            fontSize = 24.sp,
+            color = InkColor
+        )
     }
 }
 
@@ -719,7 +860,8 @@ fun DrawScope.drawElectricFieldBox(ef: SimBody) {
     }
 }
 
-// Draw the Magnetic Field Circle with field dots (⊙)
+// Draw the Magnetic Field Circle: dots (⊙) for out-of-page, crosses (⊗)
+// for into-page, following bDirectionZ.
 fun DrawScope.drawMagneticFieldCircle(bf: SimBody) {
     val r = bf.fieldRadius
     val cx = bf.x
@@ -733,18 +875,34 @@ fun DrawScope.drawMagneticFieldCircle(bf: SimBody) {
         style = Stroke(width = 1.4f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f))
     )
 
-    // Field dots grid inside circle
+    // Field marker grid inside circle
     val step = 28f
+    val crossHalf = 3.5f
     var gx = -r + 14f
     while (gx <= r - 14f) {
         var gy = -r + 14f
         while (gy <= r - 14f) {
             if (gx * gx + gy * gy <= (r - 12f) * (r - 12f)) {
-                drawCircle(
-                    color = InkColor.copy(alpha = 0.20f),
-                    radius = 2.0f,
-                    center = Offset(cx + gx, cy + gy)
-                )
+                if (bf.bDirectionZ < 0) {
+                    drawLine(
+                        color = InkColor.copy(alpha = 0.20f),
+                        start = Offset(cx + gx - crossHalf, cy + gy - crossHalf),
+                        end = Offset(cx + gx + crossHalf, cy + gy + crossHalf),
+                        strokeWidth = 1.6f
+                    )
+                    drawLine(
+                        color = InkColor.copy(alpha = 0.20f),
+                        start = Offset(cx + gx - crossHalf, cy + gy + crossHalf),
+                        end = Offset(cx + gx + crossHalf, cy + gy - crossHalf),
+                        strokeWidth = 1.6f
+                    )
+                } else {
+                    drawCircle(
+                        color = InkColor.copy(alpha = 0.20f),
+                        radius = 2.0f,
+                        center = Offset(cx + gx, cy + gy)
+                    )
+                }
             }
             gy += step
         }

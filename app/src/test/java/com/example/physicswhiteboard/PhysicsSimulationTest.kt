@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.hypot
 
 class PhysicsSimulationTest {
 
@@ -240,6 +241,398 @@ class PhysicsSimulationTest {
         assertTrue(engine.redo())
         assertEquals(1, engine.bodies.size)
         assertEquals("p = m·v", engine.bodies.single().char)
+    }
+
+    @Test
+    fun normalModeConcatenatesInsteadOfFusing() {
+        val engine = PhysicsSimulationEngine()
+        engine.fusionMode = FusionMode.NORMAL
+        engine.bodies.clear()
+        val m = engine.createLetterBody("m", 100f, 100f)
+        val v = engine.createLetterBody("v", 120f, 100f)
+        engine.bodies.add(m)
+        engine.bodies.add(v)
+
+        // Drag v onto m: existing symbols first, dropped symbols appended.
+        assertTrue(engine.tryFuseSymbols(v, m))
+        assertEquals("mv", v.char)
+        assertEquals(listOf("m", "v"), v.componentChars)
+        assertEquals(1, engine.bodies.size)
+
+        val split = engine.splitFormula(v)
+        assertEquals(2, split.size)
+        assertTrue(split.any { it.char == "m" })
+        assertTrue(split.any { it.char == "v" })
+    }
+
+    @Test
+    fun normalModeKeepsDuplicateSymbols() {
+        val engine = PhysicsSimulationEngine()
+        engine.fusionMode = FusionMode.NORMAL
+        val first = engine.createLetterBody("m", 100f, 100f)
+        val second = engine.createLetterBody("m", 120f, 100f)
+        assertTrue(engine.tryFuseSymbols(second, first))
+        assertEquals("mm", second.char)
+    }
+
+    @Test
+    fun normalModeIgnoresFieldsAndRods() {
+        val engine = PhysicsSimulationEngine()
+        engine.fusionMode = FusionMode.NORMAL
+        engine.bodies.clear()
+        val e = engine.createLetterBody("E", 100f, 100f)
+        val b = engine.createLetterBody("B", 120f, 100f)
+        engine.bodies.add(e)
+        engine.bodies.add(b)
+        assertFalse(engine.canFuseSymbols(e, b))
+        assertFalse(engine.tryFuseSymbols(e, b))
+
+        val v = engine.createLetterBody("v", 200f, 200f)
+        val t = engine.createLetterBody("t", 220f, 200f)
+        engine.bodies.add(v)
+        engine.bodies.add(t)
+        assertFalse(engine.tryFuseSymbols(v, t))
+        assertEquals(4, engine.bodies.size)
+    }
+
+    @Test
+    fun physikIntermediatesCompleteLorentzForce() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        val q = engine.createLetterBody("q", 100f, 100f)
+        val v = engine.createLetterBody("v", 120f, 100f)
+        engine.bodies.add(q)
+        engine.bodies.add(v)
+        assertTrue(engine.tryFuseSymbols(q, v))
+        assertEquals("q·v", q.char)
+
+        val b = engine.createLetterBody("B", 140f, 100f)
+        engine.bodies.add(b)
+        assertTrue(engine.tryFuseSymbols(q, b))
+        assertEquals("FL = q·v·B", q.char)
+        assertTrue(q.renderedExpr!!.glyphs.any { it.text == "F" })
+        assertTrue(q.renderedExpr!!.glyphs.any { it.text == "B" })
+    }
+
+    @Test
+    fun physikIntermediatesNeverAbsorbFieldRegions() {
+        val engine = PhysicsSimulationEngine()
+        val v = engine.createLetterBody("v", 100f, 100f)
+        val b = engine.createLetterBody("B", 120f, 100f)
+        assertTrue(b.isFieldSource)
+        assertFalse(engine.canFuseSymbols(v, b))
+        assertFalse(engine.tryFuseSymbols(v, b))
+        assertTrue(b.isFieldSource)
+    }
+
+    @Test
+    fun orbitRadiusChainBuildsPairwise() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        val m = engine.createLetterBody("m", 100f, 100f)
+        val v = engine.createLetterBody("v", 110f, 100f)
+        engine.bodies.add(m)
+        engine.bodies.add(v)
+        assertTrue(engine.tryFuseSymbols(m, v))
+        assertEquals("p = m·v", m.char)
+
+        val q = engine.createLetterBody("q", 120f, 100f)
+        engine.bodies.add(q)
+        assertTrue(engine.tryFuseSymbols(m, q))
+        assertEquals("m·q·v", m.char)
+
+        val b = engine.createLetterBody("B", 130f, 100f)
+        engine.bodies.add(b)
+        assertTrue(engine.tryFuseSymbols(m, b))
+        assertEquals("r = m·v / (q·B)", m.char)
+        assertEquals(1, engine.bodies.size)
+    }
+
+    @Test
+    fun gravitationAndSchwarzschildChainsBuildPairwise() {
+        val engine = PhysicsSimulationEngine()
+        val g = engine.createLetterBody("G", 100f, 100f)
+        val bigM = engine.createLetterBody("M", 110f, 100f)
+        assertTrue(engine.tryFuseSymbols(g, bigM))
+        assertEquals("G·M", g.char)
+
+        val m = engine.createLetterBody("m", 120f, 100f)
+        assertTrue(engine.tryFuseSymbols(g, m))
+        assertEquals("F = G·M·m / r²", g.char)
+
+        val engine2 = PhysicsSimulationEngine()
+        val g2 = engine2.createLetterBody("G", 100f, 100f)
+        val bigM2 = engine2.createLetterBody("M", 110f, 100f)
+        assertTrue(engine2.tryFuseSymbols(g2, bigM2))
+        val c = engine2.createLetterBody("c", 120f, 100f)
+        assertTrue(engine2.tryFuseSymbols(g2, c))
+        assertEquals("rs = 2GM/c²", g2.char)
+        assertTrue(g2.isBlackHole)
+    }
+
+    @Test
+    fun einsteinFusionRendersCompleteEquation() {
+        val engine = PhysicsSimulationEngine()
+        val m = engine.createLetterBody("m", 100f, 100f)
+        val c = engine.createLetterBody("c", 110f, 100f)
+        assertTrue(engine.tryFuseSymbols(m, c))
+        assertEquals("E = m·c²", m.char)
+        val glyphs = m.renderedExpr!!.glyphs.map { it.text }
+        assertTrue(glyphs.contains("E"))
+        assertTrue(glyphs.contains("="))
+        assertTrue(glyphs.contains("m"))
+        assertTrue(glyphs.contains("c"))
+    }
+
+    @Test
+    fun magneticPeriodFromMassAndField() {
+        val engine = PhysicsSimulationEngine()
+        val m = engine.createLetterBody("m", 100f, 100f)
+        val b = engine.createLetterBody("B", 110f, 100f)
+        assertTrue(engine.tryFuseSymbols(m, b))
+        assertEquals("T = 2π·m / (q·B)", m.char)
+        assertTrue(m.renderedExpr!!.glyphs.any { it.text == "T" })
+    }
+
+    @Test
+    fun magneticPeriodAcceptsExplicitCharge() {
+        val engine = PhysicsSimulationEngine()
+        val m = engine.createLetterBody("m", 100f, 100f)
+        val q = engine.createLetterBody("q", 110f, 100f)
+        assertTrue(engine.tryFuseSymbols(m, q))
+        val b = engine.createLetterBody("B", 120f, 100f)
+        assertTrue(engine.tryFuseSymbols(m, b))
+        assertEquals("T = 2π·m / (q·B)", m.char)
+    }
+
+    @Test
+    fun hallVoltageChainRendersCompleteEquation() {
+        val engine = PhysicsSimulationEngine()
+        val q = engine.createLetterBody("q", 100f, 100f)
+        val t = engine.createLetterBody("t", 110f, 100f)
+        assertTrue(engine.tryFuseSymbols(q, t))
+        assertEquals("I", q.char)
+        val b = engine.createLetterBody("B", 120f, 100f)
+        assertTrue(engine.tryFuseSymbols(q, b))
+        assertEquals("UH = RH·I·B/d", q.char)
+        assertTrue(q.renderedExpr!!.glyphs.any { it.text == "U" })
+    }
+
+    @Test
+    fun fusedCurrentSplitsBackIntoChargeAndTime() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        val q = engine.createLetterBody("q", 100f, 100f)
+        val t = engine.createLetterBody("t", 110f, 100f)
+        engine.bodies.add(q)
+        engine.bodies.add(t)
+        assertTrue(engine.tryFuseSymbols(q, t))
+        assertEquals("I", q.char)
+        val split = engine.splitFormula(q)
+        assertEquals(2, split.size)
+        assertTrue(split.any { it.char == "q" })
+        assertTrue(split.any { it.char == "t" })
+    }
+
+    @Test
+    fun paletteCurrentStaysASingleSymbol() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        val i = engine.createLetterBody("I", 100f, 100f)
+        engine.bodies.add(i)
+        assertTrue(engine.splitFormula(i).isEmpty())
+        assertEquals(1, engine.bodies.size)
+    }
+
+    @Test
+    fun frictionTokenFallsAndDampsWhileVelocityTokenRests() {
+        val engine = PhysicsSimulationEngine()
+        val v = engine.createLetterBody("v", 100f, 100f)
+        assertTrue(v.hasVelocity)
+        assertEquals(0f, v.vx, 0.001f)
+        val mu = engine.createLetterBody("μ", 100f, 100f)
+        assertTrue(mu.hasFriction)
+        assertTrue(mu.hasGravity)
+    }
+
+    @Test
+    fun releasedBodyKeepsThrowVelocity() {
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        engine.canvasWidth = 2000f
+        engine.groundY = 1500f
+        val q = engine.createLetterBody("q", 300f, 300f)
+        engine.bodies.add(q)
+        engine.beginDrag(q)
+        engine.moveDraggedBody(q, 400f, 300f)
+        engine.endDrag(q, 500f, -200f)
+        assertEquals(500f, q.vx, 0.001f)
+        assertEquals(-200f, q.vy, 0.001f)
+        engine.step(0.016f)
+        assertTrue("a thrown body keeps moving after release", q.x > 400f && q.y < 300f)
+    }
+
+    @Test
+    fun lorentzForceFollowsRightHandRule() {
+        // q+ moving +x with B out-of-page (+z) turns toward screen +y
+        // (down on the page), q(v × B); e- mirrors it.
+        val engine = PhysicsSimulationEngine()
+        engine.bodies.clear()
+        engine.bodies.add(
+            SimBody(
+                x = 300f, y = 300f,
+                isFieldSource = true, fieldType = FieldType.MAGNETIC_B,
+                fieldRadius = 200f, bDirectionZ = 1, fieldMagnitude = 1500f
+            )
+        )
+        val q = engine.createLetterBody("q", 300f, 300f)
+        q.vx = 300f
+        engine.bodies.add(q)
+        engine.step(0.05f)
+        assertTrue("Lorentz force must deflect q+ downward, vy=${q.vy}", q.vy > 10f)
+
+        val engine2 = PhysicsSimulationEngine()
+        engine2.bodies.clear()
+        engine2.bodies.add(
+            SimBody(
+                x = 300f, y = 300f,
+                isFieldSource = true, fieldType = FieldType.MAGNETIC_B,
+                fieldRadius = 200f, bDirectionZ = 1, fieldMagnitude = 1500f
+            )
+        )
+        val e = engine2.createLetterBody("e", 300f, 300f)
+        e.vx = 300f
+        engine2.bodies.add(e)
+        engine2.step(0.05f)
+        assertTrue("Lorentz force must deflect e- upward, vy=${e.vy}", e.vy < -10f)
+    }
+
+    @Test
+    fun fadenstrahlrohrElectronOrbitsOnVisibleCircle() {
+        val engine = PhysicsSimulationEngine()
+        engine.canvasWidth = 1200f
+        engine.canvasHeight = 1000f
+        engine.loadScene(ApparatusScene.FADENSTRAHLROHR)
+        val electron = engine.bodies.first { it.char == "e" }
+        val field = engine.bodies.first { it.fieldType == FieldType.MAGNETIC_B }
+        val startSpeed = hypot(electron.vx, electron.vy)
+
+        var minX = Float.MAX_VALUE
+        var maxX = -Float.MAX_VALUE
+        var minY = Float.MAX_VALUE
+        var maxY = -Float.MAX_VALUE
+        var maxDist = 0f
+        repeat(300) {
+            engine.step(0.016f)
+            if (electron.x < minX) minX = electron.x
+            if (electron.x > maxX) maxX = electron.x
+            if (electron.y < minY) minY = electron.y
+            if (electron.y > maxY) maxY = electron.y
+            val d = hypot(electron.x - field.x, electron.y - field.y)
+            if (d > maxDist) maxDist = d
+        }
+
+        assertTrue(
+            "orbit must be a real loop, span was ${maxX - minX}x${maxY - minY}",
+            maxX - minX > 150f && maxY - minY > 150f
+        )
+        assertTrue(
+            "orbit must stay inside the Helmholtz field, maxD=$maxDist",
+            maxDist < field.fieldRadius
+        )
+        assertEquals(startSpeed, hypot(electron.vx, electron.vy), startSpeed * 0.15f)
+    }
+
+    @Test
+    fun hallElectronsDriftAlongRodWithSidewaysDeflection() {
+        val engine = PhysicsSimulationEngine()
+        engine.canvasWidth = 1200f
+        engine.canvasHeight = 1000f
+        engine.loadScene(ApparatusScene.HALL_EFFECT)
+        val electrons = engine.bodies.filter { it.char == "e" }
+        assertEquals(3, electrons.size)
+        val rod = engine.bodies.first { it.isRod }
+        val rodX = rod.x
+        val rodY = rod.y
+        val starts = electrons.map { it.x to it.y }
+        repeat(180) { engine.step(0.016f) }
+
+        assertEquals("plank must stay put", rodX, rod.x, 0.001f)
+        assertEquals("plank must stay put", rodY, rod.y, 0.001f)
+        electrons.forEachIndexed { i, e ->
+            val dx = e.x - starts[i].first
+            val dy = e.y - starts[i].second
+            assertTrue("carrier $i must drift along the plank, dx=$dx", dx > 120f)
+            assertTrue("carrier $i must deflect sideways (Hall), dy=$dy", dy > 15f)
+            assertTrue("carrier $i must not freeze, v=${hypot(e.vx, e.vy)}", hypot(e.vx, e.vy) > 40f)
+        }
+    }
+
+    @Test
+    fun deflectionCapacitorDrawsParabolaAcrossField() {
+        val engine = PhysicsSimulationEngine()
+        engine.canvasWidth = 1200f
+        engine.canvasHeight = 1000f
+        engine.loadScene(ApparatusScene.DEFLECTION_CAPACITOR)
+        val electron = engine.bodies.first { it.char == "e" }
+        val startX = electron.x
+        val startY = electron.y
+        var exitedRight = false
+        var exitY = 0f
+        repeat(80) {
+            engine.step(0.016f)
+            if (!exitedRight && electron.x > 540f + 121f) {
+                exitedRight = true
+                exitY = electron.y
+            }
+        }
+        assertTrue("beam must cross the plates and exit the right side", exitedRight)
+        assertTrue("exit must stay between the plates, exitY=$exitY", exitY in 270f..450f)
+        assertTrue(
+            "beam must deflect upward, end=(${electron.x},${electron.y})",
+            electron.x > startX + 300f && electron.y < startY - 150f && electron.y > startY - 400f
+        )
+    }
+
+    @Test
+    fun massSpectrometerSeparatesIsotopes() {
+        fun runSolo(label: String): Pair<Float, Float> {
+            val engine = PhysicsSimulationEngine()
+            engine.canvasWidth = 1400f
+            engine.canvasHeight = 1600f
+            engine.groundY = 1600f
+            engine.loadScene(ApparatusScene.MASS_SPECTROMETER)
+            engine.bodies.removeAll { it.char == "²⁰Ne" || it.char == "²²Ne" }
+            val ion = engine.createLetterBody(
+                label, engine.canvasWidth * 0.28f - 160f, engine.canvasHeight * 0.42f
+            )
+            ion.charge = 1f
+            ion.mass = if (label == "²⁰Ne") 20f else 22f
+            ion.vx = 360f
+            engine.bodies.add(ion)
+            repeat(160) { engine.step(0.016f) }
+            return ion.x to ion.y
+        }
+
+        val ne20 = runSolo("²⁰Ne")
+        val ne22 = runSolo("²²Ne")
+        val separation = hypot(ne20.first - ne22.first, ne20.second - ne22.second)
+        assertTrue("isotopes must separate in the analyzer, sep=$separation", separation > 40f)
+    }
+
+    @Test
+    fun gravitationAcceptsExplicitRadius() {
+        val engine = PhysicsSimulationEngine()
+        val g = engine.createLetterBody("G", 100f, 100f)
+        val bigM = engine.createLetterBody("M", 110f, 100f)
+        assertTrue(engine.tryFuseSymbols(g, bigM))
+        assertEquals("G·M", g.char)
+        val r = engine.createLetterBody("r", 120f, 100f)
+        assertTrue(engine.tryFuseSymbols(g, r))
+        assertEquals("G·M·r", g.char)
+        val m = engine.createLetterBody("m", 130f, 100f)
+        assertTrue(engine.tryFuseSymbols(g, m))
+        assertEquals("F = G·M·m / r²", g.char)
     }
 
     @Test
