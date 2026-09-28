@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Chalk-like F -->
+    <path
+        android:strokeColor="#26221C"
+        android:strokeWidth="3.4"
+        android:strokeLineCap="round"
+        android:pathData="M37,42 L37,68 M37,42 L47,42 M37,54 L45,54" />
+    <!-- Equals -->
+    <path
+        android:strokeColor="#26221C"
+        android:strokeWidth="3.4"
+        android:strokeLineCap="round"
+        android:pathData="M52,48.5 L62,48.5 M52,55.5 L62,55.5" />
+    <!-- Italic m -->
+    <path
+        android:strokeColor="#26221C"
+        android:strokeWidth="3.4"
+        android:strokeLineCap="round"
+        android:pathData="M67,68 L67,53 M67,58 C67,54.5 70,52.6 72.6,54.2 C74.8,55.6 74.8,58.6 72.6,60 C70,61.6 67,59.9 67,56.8 M71.6,60.4 L71.6,68 M76.2,68 L76.2,53 M76.2,58 C76.2,54.5 79.2,52.6 81.8,54.2 C84,55.6 84,58.6 81.8,60 C79.2,61.6 76.2,59.9 76.2,56.8" />
+    <!-- Accent: small amber velocity arrow under the equation -->
+    <path
+        android:strokeColor="#B8860B"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M40,76 L64,76 M59.5,72 L64,76 L59.5,80" />
+</vector>

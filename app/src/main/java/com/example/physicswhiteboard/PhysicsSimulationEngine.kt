@@ -97,6 +97,13 @@ private data class FusionPlan(
     val isIntermediate: Boolean = false
 )
 
+/** Emitted for every final (non-intermediate) PHYSIK fusion. */
+data class FusionEvent(
+    val formula: String,
+    val title: String,
+    val components: List<String>
+)
+
 data class SimulationSnapshot(
     val bodies: List<SimBody>,
     val electronBeam: List<ElectronBeamPoint>
@@ -106,6 +113,9 @@ class PhysicsSimulationEngine {
 
     val bodies = mutableListOf<SimBody>()
     val electronBeam = mutableListOf<ElectronBeamPoint>()
+
+    /** Fusion results for the UI (discovery log). Consumed + cleared by the UI. */
+    val fusionEvents = mutableListOf<FusionEvent>()
 
     var groundY: Float = 800f
     var canvasWidth: Float = 1200f
@@ -141,6 +151,7 @@ class PhysicsSimulationEngine {
         isPaused = false
         bodies.clear()
         electronBeam.clear()
+        fusionEvents.clear()
         clearUndoHistory()
 
         when (scene) {
@@ -701,6 +712,9 @@ class PhysicsSimulationEngine {
         val plan = fusionPlan(componentSet, first, second) ?: return false
         val components = mergeComponents(plan.components, componentSet)
         fuseInto(first, second, plan, components)
+        if (!plan.isIntermediate) {
+            fusionEvents.add(FusionEvent(plan.formula, plan.title, components))
+        }
         return true
     }
 

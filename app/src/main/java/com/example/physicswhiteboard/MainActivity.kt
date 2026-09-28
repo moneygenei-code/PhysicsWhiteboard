@@ -2,11 +2,14 @@ package com.example.physicswhiteboard
 
 import android.graphics.Typeface
 import android.os.Bundle
+import android.view.HapticFeedbackConstants
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.Canvas
@@ -50,6 +53,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -65,6 +69,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontFamily
@@ -92,6 +100,26 @@ val DOCK_CHARS = listOf(
     listOf("v", "r", "½", "μ"),
     listOf("c", "G", "t", "B"),
     listOf("E", "q", "I", "e")
+)
+
+/** German symbol names for accessibility descriptions. */
+val DOCK_NAMES = mapOf(
+    "m" to "Masse m",
+    "M" to "Gro\u00dfe Masse M",
+    "g" to "Erdbeschleunigung g",
+    "a" to "Beschleunigung a (Schub)",
+    "v" to "Geschwindigkeit v",
+    "r" to "Radius r",
+    "Â½" to "Ein Halb",
+    "Î¼" to "Kreisfrequenz Omega",
+    "c" to "Lichtgeschwindigkeit c",
+    "G" to "Gravitationskonstante G",
+    "t" to "Zeit t bzw. Stab",
+    "B" to "Magnetfeld B",
+    "E" to "Elektrisches Feld E",
+    "q" to "Positive Ladung q",
+    "I" to "Stromst\u00e4rke I",
+    "e" to "Elektron e"
 )
 
 /**
@@ -137,6 +165,17 @@ fun PhysicsSandboxApp() {
     var paused by remember { mutableStateOf(simEngine.isPaused) }
     var fusionMode by remember { mutableStateOf(simEngine.fusionMode) }
 
+    // Discovery log: formulas fused on the board, persisted across restarts.
+    val context = LocalContext.current
+    val view: View = LocalView.current
+    val discoveryLog = remember {
+        DiscoveryLog(initialEntries = DiscoveryStore(context).load())
+    }
+    var discoveryBanner by remember { mutableStateOf<DiscoveryEntry?>(null) }
+    var discoveryBannerShownAt by remember { mutableLongStateOf(0L) }
+    var showDiscoveryBanner by remember { mutableStateOf(false) }
+    var showHistoryPanel by remember { mutableStateOf(false) }
+
     // Drag session shared by the canvas and palette drag-in gestures.
     val dragSamples = remember { mutableListOf<Pair<Long, Offset>>() }
     var paletteDragActive by remember { mutableStateOf(false) }
@@ -146,7 +185,7 @@ fun PhysicsSandboxApp() {
     var ubSlider by remember { mutableFloatStateOf(simEngine.expVoltageUb) }
     var isSlider by remember { mutableFloatStateOf(simEngine.expCurrentIs) }
 
-    var frameTrigger by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
+    var frameTrigger by remember { mutableLongStateOf(0L) }
 
     val textPaint = remember {
         android.graphics.Paint().apply {
@@ -163,6 +202,30 @@ fun PhysicsSandboxApp() {
         val cutoff = now - 120_000_000L
         while (dragSamples.size > 2 && dragSamples.first().first < cutoff) {
             dragSamples.removeAt(0)
+        }
+    }
+
+    fun haptic(constant: Int) {
+        view.performHapticFeedback(constant)
+    }
+
+    /** Turn engine fusion events into banner + persisted history entries. */
+    fun consumeFusionEvents() {
+        val events = simEngine.fusionEvents.toList()
+        if (events.isEmpty()) return
+        simEngine.fusionEvents.clear()
+        for (event in events) {
+            if (discoveryLog.remember(event.formula, event.title, System.currentTimeMillis())) {
+                DiscoveryStore(context).add(event.formula)
+                discoveryBanner = DiscoveryEntry(
+                    event.formula,
+                    event.title,
+                    System.currentTimeMillis()
+                )
+                discoveryBannerShownAt = System.nanoTime()
+                showDiscoveryBanner = true
+                haptic(HapticFeedbackConstants.LONG_PRESS)
+            }
         }
     }
 
@@ -210,7 +273,9 @@ fun PhysicsSandboxApp() {
                     ?.let { targetId -> simEngine.bodies.firstOrNull { it.id == targetId } }
                     ?: simEngine.findFusionTarget(draggedBody)
                 if (target != null) {
-                    if (!simEngine.tryFuseSymbols(draggedBody, target)) {
+                    if (simEngine.tryFuseSymbols(draggedBody, target)) {
+                        consumeFusionEvents()
+                    } else {
                         simEngine.endDrag(draggedBody)
                     }
                 } else {
@@ -256,6 +321,7 @@ fun PhysicsSandboxApp() {
         dragSamples.clear()
         recordDragSample()
         simEngine.beginDrag(body)
+        haptic(HapticFeedbackConstants.VIRTUAL_KEY)
     }
 
     // Real-time 60/120 FPS physics ticker
@@ -267,6 +333,11 @@ fun PhysicsSandboxApp() {
                     val dt = min(0.033f, max(0.004f, (now - lastTime) / 1_000_000_000f))
                     simEngine.step(dt)
                     frameTrigger = now
+                    if (showDiscoveryBanner &&
+                        (now - discoveryBannerShownAt) > 3_000_000_000L
+                    ) {
+                        showDiscoveryBanner = false
+                    }
                 }
                 lastTime = now
             }
@@ -296,6 +367,7 @@ fun PhysicsSandboxApp() {
                             if (hit != null && (hit.componentChars.size > 1 || hit.isFusedCurrent)) {
                                 simEngine.saveUndoPoint()
                                 simEngine.splitFormula(hit)
+                                haptic(HapticFeedbackConstants.LONG_PRESS)
                             }
                         }
                     )
@@ -329,6 +401,7 @@ fun PhysicsSandboxApp() {
                                 recordDragSample()
                                 simEngine.saveUndoPoint()
                                 simEngine.beginDrag(bodyHit)
+                                haptic(HapticFeedbackConstants.VIRTUAL_KEY)
                             }
                         },
                         onDrag = { change, dragAmount ->
@@ -561,7 +634,7 @@ fun PhysicsSandboxApp() {
                         expanded = showSceneDropdown,
                         onDismissRequest = { showSceneDropdown = false }
                     ) {
-                        ApparatusScene.values().forEach { scene ->
+                        ApparatusScene.entries.forEach { scene ->
                             DropdownMenuItem(
                                 text = {
                                     Column {
@@ -592,6 +665,48 @@ fun PhysicsSandboxApp() {
                         fontSize = 13.sp,
                         color = ParchmentBackground,
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                    )
+                }
+            }
+        }
+
+        // Discovery banner: brief confirmation when a new formula is found.
+        AnimatedVisibility(
+            visible = showDiscoveryBanner && discoveryBanner != null,
+            enter = fadeIn() + slideInVertically(initialOffsetY = { -it }),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopStart)
+        ) {
+            val entry = discoveryBanner
+            Surface(
+                color = InkColor,
+                shape = RoundedCornerShape(12.dp),
+                shadowElevation = 6.dp,
+                modifier = Modifier
+                    .padding(start = 24.dp, top = 70.dp)
+                    .semantics {
+                        contentDescription = "Neue Formel entdeckt: ${entry?.formula ?: ""}"
+                    }
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                    Text(
+                        text = "\u2713 Neue Formel",
+                        fontFamily = FontFamily.Serif,
+                        fontSize = 11.sp,
+                        color = Color(0xFFB8D8A8)
+                    )
+                    Text(
+                        text = entry?.formula ?: "",
+                        fontFamily = FontFamily.Serif,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = ParchmentBackground
+                    )
+                    Text(
+                        text = entry?.title ?: "",
+                        fontFamily = FontFamily.Serif,
+                        fontSize = 11.sp,
+                        color = ParchmentBackground.copy(alpha = 0.75f)
                     )
                 }
             }
@@ -641,12 +756,99 @@ fun PhysicsSandboxApp() {
             }
         }
 
+        // Formula history: toggle button next to the trash, panel above it.
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 84.dp, bottom = 24.dp)
+                .size(48.dp)
+                .background(WireframePanelBg, RoundedCornerShape(12.dp))
+                .border(1.dp, InkFaint, RoundedCornerShape(12.dp))
+                .clickable { showHistoryPanel = !showHistoryPanel }
+                .semantics {
+                    contentDescription = if (showHistoryPanel) "Formelhistorie ausblenden"
+                    else "Formelhistorie anzeigen"
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "\u0192",
+                fontFamily = FontFamily.Serif,
+                fontStyle = FontStyle.Italic,
+                fontWeight = FontWeight.Bold,
+                fontSize = 20.sp,
+                color = InkColor
+            )
+        }
+        AnimatedVisibility(
+            visible = showHistoryPanel,
+            enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomEnd)
+        ) {
+            Surface(
+                color = Color(0xFFFAF8F5),
+                shape = RoundedCornerShape(14.dp),
+                shadowElevation = 8.dp,
+                border = androidx.compose.foundation.BorderStroke(1.dp, InkFaint),
+                modifier = Modifier
+                    .padding(end = 24.dp, bottom = 84.dp)
+                    .width(280.dp)
+                    .semantics { contentDescription = "Entdeckte Formeln" }
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(
+                        text = "Entdeckte Formeln (${discoveryLog.entries.size})",
+                        fontFamily = FontFamily.Serif,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = InkColor
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    if (discoveryLog.entries.isEmpty()) {
+                        Text(
+                            text = "Noch keine Formel entdeckt. Ziehe zwei Symbole zusammen!",
+                            fontFamily = FontFamily.Serif,
+                            fontSize = 11.sp,
+                            color = InkSecondary
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.height(220.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            items(discoveryLog.entries) { entry ->
+                                Column {
+                                    Text(
+                                        text = entry.formula,
+                                        fontFamily = FontFamily.Serif,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 13.sp,
+                                        color = InkColor
+                                    )
+                                    Text(
+                                        text = entry.title,
+                                        fontFamily = FontFamily.Serif,
+                                        fontSize = 10.sp,
+                                        color = InkSecondary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Bottom-Right Minimal Wireframe Trash Can
         Box(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(24.dp)
                 .size(48.dp)
+                .semantics {
+                    contentDescription = "Papierkorb: Doppel-Tippen leert das Whiteboard"
+                }
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = {
@@ -779,8 +981,9 @@ fun PaletteTile(
     var tileOrigin by remember { mutableStateOf(Offset.Zero) }
     Box(
         modifier = Modifier
-            .size(44.dp)
+            .size(48.dp)
             .background(WireframeTileBg, RoundedCornerShape(10.dp))
+            .semantics { contentDescription = DOCK_NAMES[ch] ?: "Symbol $ch" }
             .onGloballyPositioned { tileOrigin = it.positionInRoot() }
             .clickable { onTapSpawn() }
             .pointerInput(ch) {
