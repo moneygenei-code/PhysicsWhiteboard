@@ -47,3 +47,21 @@ Verification: `testWienFilterEquilibrium` passes again; full suite green (first 
 ### Verification
 - `gradlew clean testDebugUnitTest assembleDebug` → exit 0; APK 12.1 MB; 57/57 tests green (3 BodyGeometry + 13 FormulaEngine + 32 PhysicsSimulation + 5 DiscoveryLog + 4 FusionEventDiscovery).
 - Emulator/device run not possible on this machine (no AVD system images installed, no connected device) — see HANDOVER.md "First checks on device".
+
+
+## Pass 2 (2026-09-28, commit 86329d2) — Usability improvements
+
+Brainstormed 12 ideas, scored by impact/effort (see improvement-register.md), applied the top 5:
+
+| File | Change | Reason |
+| --- | --- | --- |
+| PhysicsSimulationEngine.kt | canUndo/canRedo properties | UI needs the history state without touching private stacks |
+| MainActivity.kt | Trash: single tap opens confirm dialog (Leeren / Szene zurcksetzen / Abbrechen) | Old double-tap wipe was invisible + destructive without warning |
+| MainActivity.kt | Undo/redo: enabled bound to canUndo/canRedo, dimmed icons, semantics labels | Buttons lied about availability; screen readers had no names |
+| MainActivity.kt | New 'Schnellzugriff' drawer tab: top-3 formulas per chapter + apparatus links | Core use case (exam prep) needed a fast path |
+| FormulaChapterLinks.kt (new) | Maps 8 fusion formulas to curriculum chapters | Discovery history becomes a study loop |
+| MainActivity.kt | Banner + history rows show '-> Kapitel N' | See above |
+| MainActivity.kt | Pause chip overlay while paused | Frozen board gave no feedback |
+| EngineHistoryStateTest.kt, FormulaChapterLinksTest.kt (new) | 9 tests | Lock the new engine flags and chapter mappings |
+
+Suite after pass 2: 7 suites, 66 tests, 0 failures (was 57/5 suites). Evidence: pass2-verification.md.
