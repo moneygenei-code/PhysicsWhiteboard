@@ -64,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -178,6 +179,10 @@ fun PhysicsSandboxApp() {
     var showDiscoveryBanner by remember { mutableStateOf(false) }
     var showHistoryPanel by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
+    // Fusion FX: pulse ring on every final fusion, signature flash for E = m·c².
+    var fxCenter by remember { mutableStateOf(Offset.Zero) }
+    var fusionPulseT by remember { mutableFloatStateOf(1f) }
+    var fusionFlashT by remember { mutableFloatStateOf(1f) }
 
     // Drag session shared by the canvas and palette drag-in gestures.
     val dragSamples = remember { mutableListOf<Pair<Long, Offset>>() }
@@ -235,6 +240,11 @@ fun PhysicsSandboxApp() {
         if (events.isEmpty()) return
         simEngine.fusionEvents.clear()
         for (event in events) {
+            fxCenter = Offset(event.x, event.y)
+            fusionPulseT = 0f
+            if (event.formula == "E = m·c²") {
+                fusionFlashT = 0f
+            }
             if (discoveryLog.remember(event.formula, event.title, System.currentTimeMillis())) {
                 DiscoveryStore(context).add(event.formula)
                 discoveryBanner = DiscoveryEntry(
@@ -353,6 +363,8 @@ fun PhysicsSandboxApp() {
                     val dt = min(0.033f, max(0.004f, (now - lastTime) / 1_000_000_000f))
                     simEngine.step(dt)
                     frameTrigger = now
+                    if (fusionPulseT < 1f) fusionPulseT = (fusionPulseT + dt / 0.9f).coerceAtMost(1f)
+                    if (fusionFlashT < 1f) fusionFlashT = (fusionFlashT + dt / 0.8f).coerceAtMost(1f)
                     if (showDiscoveryBanner &&
                         (now - discoveryBannerShownAt) > 3_000_000_000L
                     ) {
@@ -489,6 +501,36 @@ fun PhysicsSandboxApp() {
                     radius = BodyGeometry.collisionRadius(fusionTarget) + 10f,
                     center = Offset(fusionTarget.x, fusionTarget.y),
                     style = Stroke(width = 2.5f)
+                )
+            }
+
+            // Fusion pulse ring: a quiet confirmation on every fusion.
+            if (fusionPulseT < 1f) {
+                drawCircle(
+                    color = Color(0xFF8A6D3B).copy(alpha = (1f - fusionPulseT) * 0.55f),
+                    radius = 16f + fusionPulseT * 240f,
+                    center = fxCenter,
+                    style = Stroke(width = 2.2f)
+                )
+            }
+
+            // Signature flash: mass-energy conversion (E = m·c²) gets the
+            // big warm bloom, echoing the web prototype's reveal.
+            if (fusionFlashT < 1f) {
+                val a = sin(3.14159265f * fusionFlashT) * 0.55f
+                val radius = max(size.width, size.height) * (0.35f + 0.4f * fusionFlashT)
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            Color(0xFFFFF6DE).copy(alpha = a),
+                            Color(0xFFF2D59C).copy(alpha = a * 0.35f),
+                            Color.Transparent
+                        ),
+                        center = fxCenter,
+                        radius = radius
+                    ),
+                    radius = radius,
+                    center = fxCenter
                 )
             }
 

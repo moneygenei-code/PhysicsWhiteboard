@@ -16,15 +16,21 @@ class FusionEventDiscoveryTest {
         val event = engine.fusionEvents.first()
         assertEquals("F = m·a", event.formula)
         assertEquals(listOf("m", "a"), event.components)
+        // event carries the fusion midpoint for UI effects
+        assertEquals(102.5f, event.x, 0.5f)
+        assertEquals(102.5f, event.y, 0.5f)
     }
 
     @Test
-    fun einsteinFusionEmitsCompleteEquation() {
+    fun einsteinFusionEmitsCompleteEquationAtFusionPoint() {
         val engine = PhysicsSimulationEngine()
         val m = engine.createLetterBody("m", 100f, 100f)
-        val c = engine.createLetterBody("c", 105f, 105f)
+        val c = engine.createLetterBody("c", 140f, 160f)
         assertTrue(engine.tryFuseSymbols(m, c))
-        assertEquals("E = m·c²", engine.fusionEvents.single().formula)
+        val event = engine.fusionEvents.single()
+        assertEquals("E = m·c²", event.formula)
+        assertEquals(120f, event.x, 0.5f)
+        assertEquals(130f, event.y, 0.5f)
     }
 
     @Test

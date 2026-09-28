@@ -101,7 +101,10 @@ private data class FusionPlan(
 data class FusionEvent(
     val formula: String,
     val title: String,
-    val components: List<String>
+    val components: List<String>,
+    /** Fusion midpoint in canvas coordinates (for UI effects). */
+    val x: Float = 0f,
+    val y: Float = 0f
 )
 
 data class SimulationSnapshot(
@@ -713,7 +716,7 @@ class PhysicsSimulationEngine {
         val components = mergeComponents(plan.components, componentSet)
         fuseInto(first, second, plan, components)
         if (!plan.isIntermediate) {
-            fusionEvents.add(FusionEvent(plan.formula, plan.title, components))
+            fusionEvents.add(FusionEvent(plan.formula, plan.title, components, first.x, first.y))
         }
         return true
     }
