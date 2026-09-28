@@ -162,6 +162,10 @@ class PhysicsSimulationEngine {
                     radius = 150f,
                     angle = (-PI / 2).toFloat(),
                     magnitude = 5880f,
+                    // A square E-region stays tangent to the B-circle along the
+                    // beam axis, so the matched ray never leaves E while still
+                    // inside B (the old 0.67 scale left an unbalanced B strip).
+                    halfWidthScale = 1f,
                     label = "E",
                     title = "Elektrisches Feld"
                 )
@@ -337,6 +341,7 @@ class PhysicsSimulationEngine {
         radius: Float,
         angle: Float,
         magnitude: Float,
+        halfWidthScale: Float = 0.67f,
         label: String,
         title: String
     ): SimBody {
@@ -348,7 +353,7 @@ class PhysicsSimulationEngine {
             fieldRadius = radius,
             // A rectangular region makes a quarter-turn visible; unlike the
             // old drawRect, this same geometry also drives force membership.
-            fieldHalfWidth = radius * 0.67f,
+            fieldHalfWidth = radius * halfWidthScale,
             fieldAngle = angle,
             fieldMagnitude = magnitude,
             char = label,
@@ -521,13 +526,26 @@ class PhysicsSimulationEngine {
             }
 
             if (body.charge != 0f) {
+                // Strang splitting for co-located E and B fields: the electric
+                // kick is applied as two half-steps around the magnetic
+                // rotation. A single full kick before the rotation displaces
+                // the discrete velocity orbit by ~a*dt/2 (a real drift that
+                // broke the Wien balance at 60 FPS); the symmetric split makes
+                // the integrator 2nd-order accurate, so qE and qvB cancel to
+                // first order in dt for the matched particle.
+                var eAccelX = 0f
+                var eAccelY = 0f
                 for (ef in eFields) {
                     if (FieldGeometry.contains(ef, body.x, body.y)) {
-                        val acceleration = (ef.fieldMagnitude * body.charge /
-                                body.mass.coerceAtLeast(0.001f)) * safeDt
-                        body.vx += cos(ef.fieldAngle) * acceleration
-                        body.vy += sin(ef.fieldAngle) * acceleration
+                        val acceleration = ef.fieldMagnitude * body.charge /
+                                body.mass.coerceAtLeast(0.001f)
+                        eAccelX += cos(ef.fieldAngle) * acceleration
+                        eAccelY += sin(ef.fieldAngle) * acceleration
                     }
+                }
+                if (eAccelX != 0f || eAccelY != 0f) {
+                    body.vx += eAccelX * safeDt * 0.5f
+                    body.vy += eAccelY * safeDt * 0.5f
                 }
 
                 for (bf in bFields) {
@@ -550,6 +568,11 @@ class PhysicsSimulationEngine {
                         body.vx = nextVx
                         body.vy = nextVy
                     }
+                }
+
+                if (eAccelX != 0f || eAccelY != 0f) {
+                    body.vx += eAccelX * safeDt * 0.5f
+                    body.vy += eAccelY * safeDt * 0.5f
                 }
             }
 
