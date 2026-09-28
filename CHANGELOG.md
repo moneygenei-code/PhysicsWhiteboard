@@ -65,3 +65,15 @@ Brainstormed 12 ideas, scored by impact/effort (see improvement-register.md), ap
 | EngineHistoryStateTest.kt, FormulaChapterLinksTest.kt (new) | 9 tests | Lock the new engine flags and chapter mappings |
 
 Suite after pass 2: 7 suites, 66 tests, 0 failures (was 57/5 suites). Evidence: pass2-verification.md.
+
+## Creative pass (2026-09-28, commit fab05dc) — Signature fusion FX
+
+Companion to the emc2-experience web prototype (see workspace DELIVERY/emc2-experience/):
+
+| File | Change | Reason |
+| --- | --- | --- |
+| PhysicsSimulationEngine.kt | FusionEvent gains midpoint x/y | UI effects need the fusion point |
+| MainActivity.kt | Pulse ring (0.9s) on every final fusion; warm radial bloom flash (0.8s) for E = m.c2 | The signature moment from the creative brief, in-app |
+| FusionEventDiscoveryTest.kt | Midpoint assertions | Lock the event geometry |
+
+Suite: 66 tests, 0 failures. APK rebuilt (12,294,986 bytes).
