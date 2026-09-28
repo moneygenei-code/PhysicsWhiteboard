@@ -47,9 +47,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -175,6 +177,7 @@ fun PhysicsSandboxApp() {
     var discoveryBannerShownAt by remember { mutableLongStateOf(0L) }
     var showDiscoveryBanner by remember { mutableStateOf(false) }
     var showHistoryPanel by remember { mutableStateOf(false) }
+    var showClearDialog by remember { mutableStateOf(false) }
 
     // Drag session shared by the canvas and palette drag-in gestures.
     val dragSamples = remember { mutableListOf<Pair<Long, Offset>>() }
@@ -186,6 +189,23 @@ fun PhysicsSandboxApp() {
     var isSlider by remember { mutableFloatStateOf(simEngine.expCurrentIs) }
 
     var frameTrigger by remember { mutableLongStateOf(0L) }
+
+    // Enabled states for undo/redo. frameTrigger is read so the derived
+    // values re-evaluate after every history change (undo/redo set it,
+    // and the frame ticker writes it continuously); Compose only
+    // recomposes the buttons when the booleans actually flip.
+    val canUndo by remember {
+        derivedStateOf {
+            frameTrigger
+            simEngine.canUndo
+        }
+    }
+    val canRedo by remember {
+        derivedStateOf {
+            frameTrigger
+            simEngine.canRedo
+        }
+    }
 
     val textPaint = remember {
         android.graphics.Paint().apply {
@@ -580,15 +600,35 @@ fun PhysicsSandboxApp() {
                         color = InkColor
                     )
                 }
-                TextButton(onClick = {
-                    if (simEngine.undo()) frameTrigger = System.nanoTime()
-                }) {
-                    Text(text = "↶", fontSize = 20.sp, color = InkColor)
+                TextButton(
+                    onClick = {
+                        if (simEngine.undo()) frameTrigger = System.nanoTime()
+                    },
+                    enabled = canUndo,
+                    modifier = Modifier.semantics {
+                        contentDescription = "Rückgängig"
+                    }
+                ) {
+                    Text(
+                        text = "↶",
+                        fontSize = 20.sp,
+                        color = if (canUndo) InkColor else InkFaint
+                    )
                 }
-                TextButton(onClick = {
-                    if (simEngine.redo()) frameTrigger = System.nanoTime()
-                }) {
-                    Text(text = "↷", fontSize = 20.sp, color = InkColor)
+                TextButton(
+                    onClick = {
+                        if (simEngine.redo()) frameTrigger = System.nanoTime()
+                    },
+                    enabled = canRedo,
+                    modifier = Modifier.semantics {
+                        contentDescription = "Wiederholen"
+                    }
+                ) {
+                    Text(
+                        text = "↷",
+                        fontSize = 20.sp,
+                        color = if (canRedo) InkColor else InkFaint
+                    )
                 }
                 TextButton(onClick = {
                     simEngine.loadScene(activeScene)
@@ -703,7 +743,15 @@ fun PhysicsSandboxApp() {
                         color = ParchmentBackground
                     )
                     Text(
-                        text = entry?.title ?: "",
+                        text = buildString {
+                            append(entry?.title ?: "")
+                            entry?.formula?.let { formula ->
+                                FormulaChapterLinks.chapterFor(formula)?.let { chapter ->
+                                    append("  \u2192 Kapitel ")
+                                    append(chapter)
+                                }
+                            }
+                        },
                         fontFamily = FontFamily.Serif,
                         fontSize = 11.sp,
                         color = ParchmentBackground.copy(alpha = 0.75f)
@@ -826,8 +874,13 @@ fun PhysicsSandboxApp() {
                                         fontSize = 13.sp,
                                         color = InkColor
                                     )
+                                    val chapter = FormulaChapterLinks.chapterFor(entry.formula)
                                     Text(
-                                        text = entry.title,
+                                        text = if (chapter != null) {
+                                            "${entry.title} \u2192 Kapitel $chapter"
+                                        } else {
+                                            entry.title
+                                        },
                                         fontFamily = FontFamily.Serif,
                                         fontSize = 10.sp,
                                         color = InkSecondary
@@ -847,15 +900,11 @@ fun PhysicsSandboxApp() {
                 .padding(24.dp)
                 .size(48.dp)
                 .semantics {
-                    contentDescription = "Papierkorb: Doppel-Tippen leert das Whiteboard"
+                    contentDescription = "Papierkorb: Tippen zum Leeren des Whiteboards"
                 }
                 .pointerInput(Unit) {
                     detectTapGestures(
-                        onDoubleTap = {
-                            simEngine.saveUndoPoint()
-                            simEngine.bodies.clear()
-                            simEngine.electronBeam.clear()
-                        }
+                        onTap = { showClearDialog = true }
                     )
                 },
             contentAlignment = Alignment.Center
@@ -880,6 +929,84 @@ fun PhysicsSandboxApp() {
                 // Vertical lines
                 drawLine(color, Offset(20f, 18f), Offset(21f, 34f), strokeW)
                 drawLine(color, Offset(28f, 18f), Offset(27f, 34f), strokeW)
+            }
+        }
+
+        if (showClearDialog) {
+            AlertDialog(
+                onDismissRequest = { showClearDialog = false },
+                title = {
+                    Text(
+                        text = "Board leeren?",
+                        fontFamily = FontFamily.Serif,
+                        fontWeight = FontWeight.Bold,
+                        color = InkColor
+                    )
+                },
+                text = {
+                    Text(
+                        text = "Alle Symbole und Felder werden entfernt. " +
+                            "Die Aktion lässt sich rückgängig machen.",
+                        fontFamily = FontFamily.Serif,
+                        color = InkSecondary
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        simEngine.saveUndoPoint()
+                        simEngine.bodies.clear()
+                        simEngine.electronBeam.clear()
+                        showClearDialog = false
+                    }) {
+                        Text(text = "Leeren", color = Color(0xFFC62828))
+                    }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = {
+                            simEngine.loadScene(activeScene)
+                            paused = false
+                            showClearDialog = false
+                        }) {
+                            Text(
+                                text = "Szene zurücksetzen",
+                                fontFamily = FontFamily.Serif,
+                                color = InkColor
+                            )
+                        }
+                        TextButton(onClick = { showClearDialog = false }) {
+                            Text(
+                                text = "Abbrechen",
+                                fontFamily = FontFamily.Serif,
+                                color = InkSecondary
+                            )
+                        }
+                    }
+                },
+                containerColor = Color(0xFFFAF8F5)
+            )
+        }
+
+        // Pause chip: the board is frozen while this is visible.
+        AnimatedVisibility(
+            visible = paused,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomStart)
+        ) {
+            Surface(
+                color = InkColor,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.padding(start = 24.dp, bottom = 24.dp)
+            ) {
+                Text(
+                    text = "Pause",
+                    fontFamily = FontFamily.Serif,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = ParchmentBackground,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                )
             }
         }
 
@@ -1121,7 +1248,7 @@ fun LernblattDrawer(
     onLoadApparatus: (ApparatusScene) -> Unit
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabTitles = listOf("10 Kapitel", "Formeln", "Selbsttest", "15-Punkte")
+    val tabTitles = listOf("10 Kapitel", "Formeln", "Selbsttest", "15-Punkte", "Schnellzugriff")
 
     Surface(
         modifier = Modifier
@@ -1187,6 +1314,78 @@ fun LernblattDrawer(
                 1 -> FormulasTab()
                 2 -> SelfTestTab()
                 3 -> StrategyTab()
+                4 -> QuickReferenceTab(onLoadApparatus)
+            }
+        }
+    }
+}
+
+@Composable
+fun QuickReferenceTab(onLoadApparatus: (ApparatusScene) -> Unit) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            Text(
+                text = "Die wichtigsten Prüfungsformeln",
+                fontFamily = FontFamily.Serif,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                color = InkColor
+            )
+        }
+        items(KlausurCurriculum.CHAPTERS) { ch ->
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = "Kapitel ${ch.number}  " + ch.title,
+                        fontFamily = FontFamily.Serif,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                        color = InkSecondary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    ch.formulas.take(3).forEach { (form, exp) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = form,
+                                fontFamily = FontFamily.Serif,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = InkColor
+                            )
+                            Text(
+                                text = exp,
+                                fontFamily = FontFamily.Serif,
+                                fontSize = 10.sp,
+                                color = InkSecondary,
+                                modifier = Modifier.padding(start = 8.dp)
+                            )
+                        }
+                    }
+                    SceneLinkButton("Kapitel im Whiteboard öffnen") {
+                        val scene = when (ch.number) {
+                            5 -> ApparatusScene.DEFLECTION_CAPACITOR
+                            7 -> ApparatusScene.WIEN_FILTER
+                            8 -> ApparatusScene.FADENSTRAHLROHR
+                            9 -> ApparatusScene.MASS_SPECTROMETER
+                            10 -> ApparatusScene.HALL_EFFECT
+                            else -> null
+                        }
+                        if (scene != null) onLoadApparatus(scene)
+                    }
+                }
             }
         }
     }

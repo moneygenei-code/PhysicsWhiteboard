@@ -932,6 +932,9 @@ class PhysicsSimulationEngine {
         redoStack.clear()
     }
 
+    val canUndo: Boolean get() = undoStack.isNotEmpty()
+    val canRedo: Boolean get() = redoStack.isNotEmpty()
+
     fun undo(): Boolean {
         if (undoStack.isEmpty()) return false
         redoStack.addLast(snapshot())
