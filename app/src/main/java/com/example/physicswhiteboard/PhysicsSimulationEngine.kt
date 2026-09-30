@@ -35,8 +35,17 @@ enum class ApparatusScene(val displayName: String, val chapterRef: String) {
     HALL_EFFECT("Hall-Effekt", "Kapitel 10 · Hallspannung")
 }
 
+/**
+ * Unit system of the simulation: length in px with 100 px = 1 m, time in seconds,
+ * mass in symbol mass units (the palette letter m has mass 1), velocities in px/s,
+ * angles in radians. The screen y-axis points down, so gravity accelerates +y.
+ */
 object PhysicsConstants {
-    const val gravityAcceleration = 2200f
+    /** Scale constant: 100 pixels represent 1 meter in the real world. */
+    const val pxPerMeter = 100f
+
+    /** Real-world gravitational acceleration g = 9.81 m/s^2, expressed in sim units. */
+    const val gravityAcceleration = 9.81f * pxPerMeter
     const val thrustAcceleration = 1300f
     const val nearVacuumDrag = 0.018f
     const val frictionStrength = 8f
@@ -504,6 +513,9 @@ class PhysicsSimulationEngine {
     companion object {
         /** Center distance that fuses two symbols in NORMAL mode. */
         const val NORMAL_FUSION_DISTANCE = 38f
+
+        /** Beyond this distance a black hole exerts no pull (keeps the pair loop cheap). */
+        const val BLACK_HOLE_RANGE_PX = 900f
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -526,6 +538,8 @@ class PhysicsSimulationEngine {
                 )
             }
         }
+
+        applyBlackHoleAttraction(safeDt)
 
         for (body in bodies) {
             body.age += safeDt
@@ -632,6 +646,39 @@ class PhysicsSimulationEngine {
         handleCollisions()
     }
 
+    /**
+     * Softened Newtonian attraction toward every fused black hole (rs = 2GM/c^2).
+     * Sim units: a = G_SIM * M / (r^2 + eps^2) with G_SIM = 5.0e7 px^3/(u*s^2),
+     * M in symbol mass units and r in px. Softening (eps = 60 px) plus the clamp at
+     * 6000 px/s^2 remove the singularity and keep extreme inputs stable (no NaN,
+     * no explosion). Black holes are scene anchors: they are never accelerated by
+     * the pull, and the attraction is a plain deterministic velocity kick a*dt,
+     * integrated exactly like every other force in step().
+     */
+    private fun applyBlackHoleAttraction(dt: Float) {
+        val blackHoles = bodies.filter { it.isBlackHole }
+        if (blackHoles.isEmpty()) return
+        val gSim = 5.0e7f
+        val softening = 60f
+        val maxAcceleration = 6000f
+        for (blackHole in blackHoles) {
+            for (body in bodies) {
+                if (body.id == blackHole.id || body.isBlackHole) continue
+                if (body.isFieldSource || body.isRod || body.isBeingDragged) continue
+                val dx = blackHole.x - body.x
+                val dy = blackHole.y - body.y
+                val distanceSquared = dx * dx + dy * dy
+                if (distanceSquared > BLACK_HOLE_RANGE_PX * BLACK_HOLE_RANGE_PX) continue
+                val distance = sqrt(distanceSquared)
+                if (distance < 0.001f) continue
+                val acceleration = (gSim * blackHole.mass /
+                        (distanceSquared + softening * softening)).coerceAtMost(maxAcceleration)
+                body.vx += dx / distance * acceleration * dt
+                body.vy += dy / distance * acceleration * dt
+            }
+        }
+    }
+
     private fun handleCollisions() {
         // Rods are static guides (conductor planks): they neither move nor
         // shove, so carriers can drift along the Hall plank and user-built
@@ -664,10 +711,15 @@ class PhysicsSimulationEngine {
                 }
 
                 val overlap = minimumDistance - distance
-                first.x -= nx * overlap * 0.5f
-                first.y -= ny * overlap * 0.5f
-                second.x += nx * overlap * 0.5f
-                second.y += ny * overlap * 0.5f
+                // Separate by inverse mass: the heavier body barely moves,
+                // matching how contact between different masses should resolve.
+                val firstWeight = 1f / first.mass.coerceAtLeast(0.001f)
+                val secondWeight = 1f / second.mass.coerceAtLeast(0.001f)
+                val weightSum = firstWeight + secondWeight
+                first.x -= nx * overlap * (firstWeight / weightSum)
+                first.y -= ny * overlap * (firstWeight / weightSum)
+                second.x += nx * overlap * (secondWeight / weightSum)
+                second.y += ny * overlap * (secondWeight / weightSum)
 
                 val relativeVelocity = (first.vx - second.vx) * nx +
                         (first.vy - second.vy) * ny

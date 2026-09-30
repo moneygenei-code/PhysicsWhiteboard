@@ -70,6 +70,10 @@ Quickly load classic experimental setups:
 - Android SDK 34 (minSdk 26)
 
 ### Running Unit Tests
+
+The simulation is verified by a physics benchmark suite against real-world
+classical mechanics (free fall, projectile arcs, collisions, restitution,
+damping) - see `docs/physics-audit/` for the audit and validation reports.
 ```bash
 ./gradlew testDebugUnitTest
 ```

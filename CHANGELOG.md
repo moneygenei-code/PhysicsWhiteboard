@@ -1,3 +1,42 @@
+# CHANGELOG - Physics Whiteboard
+
+## v1.2 (versionCode 3) - 2026-09-30 - Physics audit & realism pass
+
+Audit: every physics behavior enumerated and verified against real classical
+mechanics; full reports in `docs/physics-audit/`.
+
+### `app/src/main/java/com/example/physicswhiteboard/PhysicsSimulationEngine.kt`
+| Change | Reason |
+| --- | --- |
+| `PhysicsConstants.pxPerMeter = 100f` added; unit system documented in KDoc | The scale was implicit; audits and future tuning need one source of truth |
+| `gravityAcceleration` 2200 -> `9.81f * pxPerMeter` (981) | Old value equals 22 m/s^2 at the engine's own scale: 2.2x real gravity. Fall times now match t = sqrt(2h/g) within 0.2% |
+| New `applyBlackHoleAttraction(dt)` called from `step()`; `BLACK_HOLE_RANGE_PX = 900f` | `isBlackHole` was set by the rs = 2GM/c^2 fusion but never read: the black hole had zero physical effect. Now softened Newtonian pull a = G*M/(r^2+eps^2), G_SIM = 5e7, eps = 60 px, clamp 6000 px/s^2; hole stays static; fully deterministic |
+| Collision separation now inverse-mass weighted (was fixed 50/50) | Textbook contact resolution: heavier body moves less; verified with m vs 3m impact tests |
+
+### `app/src/test/java/com/example/physicswhiteboard/PhysicsBenchmarkTest.kt` (new)
+12 benchmark/stability tests: real-g unit check, free fall vs sqrt(2h/g),
+45-degree projectile range/apex vs v^2/g, momentum conservation + e = 0.6
+collision outcome, restitution speed ratio and apex geometric decay incl.
+dt-convergence proof, mu-token exponential damping, black-hole inverse-square,
+bit-identical determinism over 600 frames, zero-mass / 1e9-mass / 10^6-velocity
+/ stacked-resting edge cases.
+
+### Docs
+| File | Purpose |
+| --- | --- |
+| `docs/physics-audit/AUDIT_REPORT.md` | Full behavior inventory (16 systems), issues P1-P5 with severities, all fixed |
+| `docs/physics-audit/BENCHMARK_REPORT.md` | Simulated vs textbook numbers with error margins and tolerance rationale |
+| `docs/physics-audit/TUNING_SHEET.md` | Every physics constant, value, real-world meaning, reasoning |
+| `docs/physics-audit/HANDOVER.md` | How to run/interpret everything, known limitations |
+
+### `app/build.gradle.kts`
+| `versionCode 3`, `versionName "1.2"` | Release the physics pass |
+
+Verification: `gradlew.bat testDebugUnitTest --rerun-tasks` twice - 78/78 green,
+exit 0 both runs; `assembleDebug` exit 0.
+
+---
+
 # CHANGELOG — Physics Whiteboard v1.1 (versionCode 2)
 
 Date: 2026-09-28 · Baseline: commit `b1b013c` · This release: `95722bf` + `4d4c852`
